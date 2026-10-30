@@ -4,6 +4,7 @@ use clipsync_clipboard::NativeClipboard;
 use clipsync_core::daemon::{Daemon, DaemonConfig, DEFAULT_PORT as PORT};
 use clipsync_core::discovery::{announce_addrs, system_interfaces, Discovery};
 use clipsync_core::keystore::KeychainStore;
+use clipsync_core::power::NetworkWatcher;
 use clipsync_core::sync::node_id_from_public_key;
 use clipsync_core::pairing::{Incoming, Node, PairingAttempt};
 use clipsync_core::transport::Listener;
@@ -64,11 +65,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if paired == 0 {
                 println!("No paired devices yet: run `clipsync pair-listen` on one machine and `pair-connect` on the other.");
             }
-            let _daemon = Daemon::start(
+            let daemon = Arc::new(Daemon::start(
                 DaemonConfig { node, listener, resolver: discovery.clone(), auto_dial: true },
                 NativeClipboard::new,
-            );
+            ));
+            let d = daemon.clone();
+            let _net = NetworkWatcher::start_system(move || d.network_changed());
             println!("Syncing with {paired} paired device(s). Ctrl-C to quit.");
+            #[cfg(target_os = "macos")]
+            {
+                let d = daemon.clone();
+                let _wake = clipsync_core::power::wake::watch(move || d.network_changed());
+                clipsync_core::power::wake::run_event_loop();
+            }
+            #[cfg(windows)]
+            {
+                let d = daemon.clone();
+                clipsync_core::power::wake::watch(move || d.network_changed());
+            }
             loop {
                 std::thread::park();
             }
