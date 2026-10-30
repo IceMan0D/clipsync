@@ -8,3 +8,7 @@ license.workspace = true
 clipsync-core = { path = "../core" }
 clipsync-clipboard = { path = "../clipboard" }
 hex = "0.4.3"
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+
+[build-dependencies]
+tauri-build = "2"
