@@ -3,8 +3,26 @@
 use std::fmt;
 use std::sync::mpsc::Receiver;
 
+pub mod conceal;
 mod mock;
+mod retry;
 pub use mock::MockClipboard;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::MacClipboard;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::WindowsClipboard;
+
+/// The native clipboard backend for the current OS.
+#[cfg(target_os = "macos")]
+pub type NativeClipboard = MacClipboard;
+#[cfg(windows)]
+pub type NativeClipboard = WindowsClipboard;
 
 /// Content carried on the clipboard.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +61,10 @@ mod tests {
     fn written_content_can_be_read_back() {
         let mut clip = MockClipboard::new();
         clip.write(ClipboardContent::Text("hello".into())).unwrap();
-        assert_eq!(clip.read().unwrap(), Some(ClipboardContent::Text("hello".into())));
+        assert_eq!(
+            clip.read().unwrap(),
+            Some(ClipboardContent::Text("hello".into()))
+        );
     }
 
     #[test]
@@ -65,6 +86,9 @@ mod tests {
         let mut b = MockClipboard::new();
         a.write(ClipboardContent::Image(vec![1, 2, 3])).unwrap();
         b.write(a.read().unwrap().unwrap()).unwrap();
-        assert_eq!(b.read().unwrap(), Some(ClipboardContent::Image(vec![1, 2, 3])));
+        assert_eq!(
+            b.read().unwrap(),
+            Some(ClipboardContent::Image(vec![1, 2, 3]))
+        );
     }
 }
