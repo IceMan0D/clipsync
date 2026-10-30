@@ -2,9 +2,9 @@
 
 use crate::transport::{self, Session};
 use clipsync_clipboard::{ClipboardBackend, ClipboardContent};
+use sha2::{Digest, Sha256};
 use std::sync::mpsc::Receiver;
 use std::time::{SystemTime, UNIX_EPOCH};
-use sha2::{Digest, Sha256};
 
 pub const WINDOW_MS: u64 = 1000;
 pub const SUPPRESS_MS: u64 = 500;
@@ -133,7 +133,11 @@ impl Engine {
             }
         }
         self.counter += 1;
-        let stamp = Stamp { ts_ms: now_ms, counter: self.counter, node: self.node };
+        let stamp = Stamp {
+            ts_ms: now_ms,
+            counter: self.counter,
+            node: self.node,
+        };
         self.latest = Some(stamp);
         self.last_sent = Some((hash, now_ms));
         Outgoing::Send(stamp)
@@ -171,7 +175,9 @@ pub enum SyncError {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// A clipboard bound to the sync engine; drives one `Session` at a time.
@@ -184,7 +190,11 @@ pub struct SyncNode<C: ClipboardBackend> {
 impl<C: ClipboardBackend> SyncNode<C> {
     pub fn new(mut clipboard: C, public_key: &[u8]) -> Self {
         let watch = clipboard.watch().expect("clipboard watch");
-        SyncNode { engine: Engine::new(node_id_from_public_key(public_key)), clipboard, watch }
+        SyncNode {
+            engine: Engine::new(node_id_from_public_key(public_key)),
+            clipboard,
+            watch,
+        }
     }
 
     pub fn clipboard(&self) -> &C {
@@ -205,11 +215,16 @@ impl<C: ClipboardBackend> SyncNode<C> {
         while self.watch.try_recv().is_ok() {}
         session.send(TYPE_HELLO, &self.engine.counter().to_be_bytes())?;
         let m = session.recv()?;
-        let bytes: [u8; 8] = m.payload.as_slice().try_into().map_err(|_| SyncError::Malformed)?;
+        let bytes: [u8; 8] = m
+            .payload
+            .as_slice()
+            .try_into()
+            .map_err(|_| SyncError::Malformed)?;
         if m.content_type != TYPE_HELLO {
             return Err(SyncError::Malformed);
         }
-        self.engine.observe_remote_counter(u64::from_be_bytes(bytes));
+        self.engine
+            .observe_remote_counter(u64::from_be_bytes(bytes));
         Ok(())
     }
 
@@ -218,7 +233,9 @@ impl<C: ClipboardBackend> SyncNode<C> {
         let mut sent = 0;
         while let Ok(content) = self.watch.try_recv() {
             if let Outgoing::Send(stamp) = self.engine.on_local_change(&content, now_ms()) {
-                let ClipboardContent::Text(t) = &content else { continue };
+                let ClipboardContent::Text(t) = &content else {
+                    continue;
+                };
                 let mut payload = Vec::with_capacity(ITEM_HEADER + t.len());
                 payload.extend_from_slice(&stamp.ts_ms.to_be_bytes());
                 payload.extend_from_slice(&stamp.counter.to_be_bytes());
@@ -236,7 +253,11 @@ impl<C: ClipboardBackend> SyncNode<C> {
         let m = session.recv()?;
         match m.content_type {
             TYPE_HELLO => {
-                let b: [u8; 8] = m.payload.as_slice().try_into().map_err(|_| SyncError::Malformed)?;
+                let b: [u8; 8] = m
+                    .payload
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| SyncError::Malformed)?;
                 self.engine.observe_remote_counter(u64::from_be_bytes(b));
             }
             TYPE_TEXT => {
@@ -249,7 +270,8 @@ impl<C: ClipboardBackend> SyncNode<C> {
                     counter: u64::from_be_bytes(p[8..16].try_into().unwrap()),
                     node: p[16..48].try_into().unwrap(),
                 };
-                let body = String::from_utf8(p[ITEM_HEADER..].to_vec()).map_err(|_| SyncError::Malformed)?;
+                let body = String::from_utf8(p[ITEM_HEADER..].to_vec())
+                    .map_err(|_| SyncError::Malformed)?;
                 let content = ClipboardContent::Text(body);
                 if self.engine.on_remote(stamp, &content, now_ms()) == Incoming::Apply {
                     self.clipboard.write(content)?;
@@ -266,7 +288,11 @@ mod tests {
     use super::*;
 
     fn st(ts_ms: u64, counter: u64, n: u8) -> Stamp {
-        Stamp { ts_ms, counter, node: [n; 32] }
+        Stamp {
+            ts_ms,
+            counter,
+            node: [n; 32],
+        }
     }
 
     #[test]
@@ -309,8 +335,12 @@ mod tests {
     #[test]
     fn local_change_is_stamped_with_increasing_counter() {
         let mut e = eng(1);
-        let Outgoing::Send(a) = e.on_local_change(&text("a"), 10_000) else { panic!() };
-        let Outgoing::Send(b) = e.on_local_change(&text("b"), 10_001) else { panic!() };
+        let Outgoing::Send(a) = e.on_local_change(&text("a"), 10_000) else {
+            panic!()
+        };
+        let Outgoing::Send(b) = e.on_local_change(&text("b"), 10_001) else {
+            panic!()
+        };
         assert_eq!((a.ts_ms, a.counter, a.node), (10_000, 1, [1; 32]));
         assert_eq!(b.counter, 2);
     }
@@ -318,22 +348,38 @@ mod tests {
     #[test]
     fn rapid_duplicate_copies_are_sent_once() {
         let mut e = eng(1);
-        assert!(matches!(e.on_local_change(&text("a"), 10_000), Outgoing::Send(_)));
+        assert!(matches!(
+            e.on_local_change(&text("a"), 10_000),
+            Outgoing::Send(_)
+        ));
         assert_eq!(e.on_local_change(&text("a"), 10_300), Outgoing::Duplicate);
         // after the window the same text is sent again
-        assert!(matches!(e.on_local_change(&text("a"), 11_500), Outgoing::Send(_)));
+        assert!(matches!(
+            e.on_local_change(&text("a"), 11_500),
+            Outgoing::Send(_)
+        ));
         // different content is never a duplicate
-        assert!(matches!(e.on_local_change(&text("b"), 11_501), Outgoing::Send(_)));
+        assert!(matches!(
+            e.on_local_change(&text("b"), 11_501),
+            Outgoing::Send(_)
+        ));
     }
 
     #[test]
     fn applied_remote_item_is_not_echoed_within_suppression_window() {
         let mut e = eng(1);
-        let remote = Stamp { ts_ms: 10_000, counter: 1, node: [2; 32] };
+        let remote = Stamp {
+            ts_ms: 10_000,
+            counter: 1,
+            node: [2; 32],
+        };
         assert_eq!(e.on_remote(remote, &text("x"), 10_000), Incoming::Apply);
         assert_eq!(e.on_local_change(&text("x"), 10_200), Outgoing::Echo);
         // outside the window a genuine re-copy goes out
-        assert!(matches!(e.on_local_change(&text("x"), 10_600), Outgoing::Send(_)));
+        assert!(matches!(
+            e.on_local_change(&text("x"), 10_600),
+            Outgoing::Send(_)
+        ));
     }
 
     #[test]
@@ -341,7 +387,12 @@ mod tests {
         let mut e = eng(1);
         let big = ClipboardContent::Text("a".repeat(MAX_TEXT_BYTES + 1));
         assert_eq!(e.on_local_change(&big, 10_000), Outgoing::TooLarge);
-        assert_eq!(e.take_events(), vec![SyncEvent::TextTooLarge { bytes: MAX_TEXT_BYTES + 1 }]);
+        assert_eq!(
+            e.take_events(),
+            vec![SyncEvent::TextTooLarge {
+                bytes: MAX_TEXT_BYTES + 1
+            }]
+        );
         let max = ClipboardContent::Text("a".repeat(MAX_TEXT_BYTES));
         assert!(matches!(e.on_local_change(&max, 10_001), Outgoing::Send(_)));
         assert!(e.take_events().is_empty());
@@ -350,7 +401,11 @@ mod tests {
     #[test]
     fn oversize_remote_text_is_dropped_with_event() {
         let mut e = eng(1);
-        let remote = Stamp { ts_ms: 10_000, counter: 1, node: [2; 32] };
+        let remote = Stamp {
+            ts_ms: 10_000,
+            counter: 1,
+            node: [2; 32],
+        };
         let big = ClipboardContent::Text("a".repeat(MAX_TEXT_BYTES + 1));
         assert_eq!(e.on_remote(remote, &big, 10_000), Incoming::Reject);
         assert_eq!(e.take_events().len(), 1);
@@ -360,7 +415,11 @@ mod tests {
     fn older_remote_item_loses_to_newer_local_item() {
         let mut e = eng(1);
         e.on_local_change(&text("mine"), 20_000);
-        let old = Stamp { ts_ms: 10_000, counter: 50, node: [2; 32] };
+        let old = Stamp {
+            ts_ms: 10_000,
+            counter: 50,
+            node: [2; 32],
+        };
         assert_eq!(e.on_remote(old, &text("theirs"), 20_001), Incoming::Reject);
     }
 
@@ -368,8 +427,12 @@ mod tests {
     fn simultaneous_copies_converge_on_the_same_winner() {
         let mut a = eng(1);
         let mut b = eng(2);
-        let Outgoing::Send(sa) = a.on_local_change(&text("from-a"), 50_000) else { panic!() };
-        let Outgoing::Send(sb) = b.on_local_change(&text("from-b"), 50_100) else { panic!() };
+        let Outgoing::Send(sa) = a.on_local_change(&text("from-a"), 50_000) else {
+            panic!()
+        };
+        let Outgoing::Send(sb) = b.on_local_change(&text("from-b"), 50_100) else {
+            panic!()
+        };
         let ra = a.on_remote(sb, &text("from-b"), 50_110);
         let rb = b.on_remote(sa, &text("from-a"), 50_110);
         // equal counters inside the window: higher node id (b) wins on both sides
@@ -384,7 +447,9 @@ mod tests {
         assert_eq!(e.counter(), 40);
         e.observe_remote_counter(3);
         assert_eq!(e.counter(), 40);
-        let Outgoing::Send(s) = e.on_local_change(&text("b"), 10_001) else { panic!() };
+        let Outgoing::Send(s) = e.on_local_change(&text("b"), 10_001) else {
+            panic!()
+        };
         assert_eq!(s.counter, 41);
     }
 }

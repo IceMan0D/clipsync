@@ -22,7 +22,12 @@ fn handshake(
     sa: Session,
     b: SyncNode<MockClipboard>,
     sb: Session,
-) -> (SyncNode<MockClipboard>, Session, SyncNode<MockClipboard>, Session) {
+) -> (
+    SyncNode<MockClipboard>,
+    Session,
+    SyncNode<MockClipboard>,
+    Session,
+) {
     let h = thread::spawn(move || {
         let (mut a, mut sa) = (a, sa);
         a.handshake(&mut sa).unwrap();
@@ -97,7 +102,9 @@ fn oversize_text_is_skipped_and_reported() {
     assert_eq!(p.a.pump_local(&mut p.sa).unwrap(), 0);
     assert_eq!(
         p.a.take_events(),
-        vec![SyncEvent::TextTooLarge { bytes: MAX_TEXT_BYTES + 1 }]
+        vec![SyncEvent::TextTooLarge {
+            bytes: MAX_TEXT_BYTES + 1
+        }]
     );
 }
 
