@@ -185,6 +185,7 @@ pub struct SyncNode<C: ClipboardBackend> {
     engine: Engine,
     clipboard: C,
     watch: Receiver<ClipboardContent>,
+    paused: bool,
 }
 
 impl<C: ClipboardBackend> SyncNode<C> {
@@ -194,7 +195,14 @@ impl<C: ClipboardBackend> SyncNode<C> {
             engine: Engine::new(node_id_from_public_key(public_key)),
             clipboard,
             watch,
+            paused: false,
         }
+    }
+
+    /// While paused, local changes are discarded (not replayed on resume) and
+    /// remote items are received but not applied.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
     }
 
     pub fn clipboard(&self) -> &C {
@@ -231,6 +239,10 @@ impl<C: ClipboardBackend> SyncNode<C> {
     /// Send all pending local clipboard changes; returns how many items were sent.
     pub fn pump_local(&mut self, session: &mut Session) -> Result<usize, SyncError> {
         let mut sent = 0;
+        if self.paused {
+            while self.watch.try_recv().is_ok() {}
+            return Ok(0);
+        }
         while let Ok(content) = self.watch.try_recv() {
             if let Outgoing::Send(stamp) = self.engine.on_local_change(&content, now_ms()) {
                 let ClipboardContent::Text(t) = &content else {
@@ -273,7 +285,8 @@ impl<C: ClipboardBackend> SyncNode<C> {
                 let body = String::from_utf8(p[ITEM_HEADER..].to_vec())
                     .map_err(|_| SyncError::Malformed)?;
                 let content = ClipboardContent::Text(body);
-                if self.engine.on_remote(stamp, &content, now_ms()) == Incoming::Apply {
+                if !self.paused
+                    && self.engine.on_remote(stamp, &content, now_ms()) == Incoming::Apply {
                     self.clipboard.write(content)?;
                 }
             }

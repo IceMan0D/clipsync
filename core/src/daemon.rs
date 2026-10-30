@@ -42,6 +42,7 @@ struct Shared {
     registry: Registry,
     to_sync: Mutex<Sender<Handoff>>,
     stop: AtomicBool,
+    paused: AtomicBool,
 }
 
 pub struct Daemon {
@@ -119,6 +120,7 @@ impl Daemon {
             registry: Registry::new(),
             to_sync: Mutex::new(tx),
             stop: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
         });
         let local_addr = cfg.listener.local_addr();
         let mut threads = Vec::new();
@@ -140,6 +142,15 @@ impl Daemon {
             }
         }
         Daemon { shared, local_addr, threads }
+    }
+
+    /// Pause or resume clipboard sync. Connections stay up; nothing is sent or applied while paused.
+    pub fn set_paused(&self, paused: bool) {
+        self.shared.paused.store(paused, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.shared.paused.load(Ordering::SeqCst)
     }
 
     pub fn local_addr(&self) -> std::net::SocketAddr {
@@ -223,6 +234,7 @@ struct Active {
 fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receiver<Handoff>) {
     let mut active: Vec<Active> = Vec::new();
     while !s.stopped() {
+        node.set_paused(s.paused.load(Ordering::SeqCst));
         loop {
             let h = if active.is_empty() {
                 match rx.recv_timeout(Duration::from_millis(50)) {
