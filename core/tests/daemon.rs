@@ -210,3 +210,38 @@ fn unpaired_peer_never_connects() {
 fn a_pub(a: &Side) -> Keypair {
     Keypair::from_parts(a.public.clone(), vec![0; 32])
 }
+
+#[test]
+fn pausing_stops_sending_and_applying_and_resuming_restores_sync() {
+    let (mut a, mut b) = two_sides();
+    a.start(true);
+    b.start(true);
+    assert!(wait_until(Duration::from_secs(5), || {
+        a.d().peer_state(&b.public) == ConnState::Connected
+            && b.d().peer_state(&a.public) == ConnState::Connected
+    }));
+
+    // b paused: a's copy is not applied on b
+    b.d().set_paused(true);
+    assert!(b.d().is_paused());
+    thread::sleep(Duration::from_millis(200));
+    a.copy("while b paused");
+    thread::sleep(Duration::from_millis(500));
+    assert_ne!(b.pasted(), Some(ClipboardContent::Text("while b paused".into())));
+
+    // b paused: b's local copy is not sent to a
+    b.copy("b local while paused");
+    thread::sleep(Duration::from_millis(500));
+    assert_ne!(a.pasted(), Some(ClipboardContent::Text("b local while paused".into())));
+
+    // resume: new copies flow again, paused-era copies are not replayed
+    b.d().set_paused(false);
+    thread::sleep(Duration::from_millis(200));
+    assert_ne!(a.pasted(), Some(ClipboardContent::Text("b local while paused".into())));
+    a.copy("after resume");
+    assert!(wait_until(Duration::from_secs(1), || b.pasted()
+        == Some(ClipboardContent::Text("after resume".into()))));
+    b.copy("b after resume");
+    assert!(wait_until(Duration::from_secs(1), || a.pasted()
+        == Some(ClipboardContent::Text("b after resume".into()))));
+}

@@ -1,5 +1,6 @@
-// Stub for the Tauri shell; the real UI arrives in a later ticket.
-// For now: a CLI for SAS pairing and device management.
+// Entry point: tray app by default, plus a CLI for SAS pairing and device management.
+mod tray;
+
 use clipsync_clipboard::NativeClipboard;
 use clipsync_core::addresses::{CandidateResolver, PeerAddr};
 use clipsync_core::connection::Resolver;
@@ -49,6 +50,11 @@ fn prompt_confirm(att: &PairingAttempt) -> bool {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Launched with no subcommand (e.g. from the app bundle): run as the tray app.
+    if args.is_empty() || args[0] == "app" {
+        tray::run();
+        return Ok(());
+    }
     let store = Arc::new(KeychainStore::new("clipsync"));
     let node = Node::new(store.load_or_create_identity()?, store);
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
@@ -123,7 +129,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             node.remove_device(&hex::decode(key)?)?;
             println!("Removed.");
         }
-        _ => eprintln!("usage: clipsync run [port] | pair-listen [addr] | pair-connect <addr> | devices | add-address <hex-key> <addr> | remove <hex-key>"),
+        _ => eprintln!("usage: clipsync [app] | run [port] | pair-listen [addr] | pair-connect <addr> | devices | add-address <hex-key> <addr> | remove <hex-key>"),
     }
     Ok(())
 }

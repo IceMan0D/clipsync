@@ -40,3 +40,14 @@ New-NetFirewallRule -DisplayName "clipsync" -Direction Inbound -Protocol TCP `
 mDNS discovery uses UDP 5353 multicast, which Windows allows for private networks by default
 (rule "mDNS (UDP-In)"). Without the inbound TCP rule the Windows machine can still dial out,
 but the Mac cannot connect to it.
+
+## Tray app
+
+Running `clipsync` with no arguments (or `clipsync app`) starts the Tauri tray app: a menu bar
+item on macOS (accessory app, no Dock icon) and a system tray icon on Windows. The menu lists
+paired devices with their connection status, a **Pause sync** toggle (stops sending and applying
+clipboard changes; connections stay up), Settings, and Quit.
+
+Build prerequisites: macOS needs only the Xcode command line tools. Windows needs the MSVC build
+tools (as for any Rust build); the WebView2 runtime is only needed at run time (preinstalled on
+Windows 10/11). Linux is not a supported target.
