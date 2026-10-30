@@ -3,6 +3,25 @@
   <head><meta charset="utf-8"><title>ClipSync Settings</title></head>
   <body style="font-family: system-ui; padding: 24px">
     <h2>ClipSync Settings</h2>
-    <p>Settings arrive in a later release.</p>
+    <!-- Each settings group is its own <section> so additions merge cleanly. -->
+    <section id="startup">
+      <label>
+        <input type="checkbox" id="autostart"> Start ClipSync at login
+      </label>
+      <div id="autostart-error" style="color: #b00020"></div>
+    </section>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const box = document.getElementById("autostart");
+      const err = document.getElementById("autostart-error");
+      invoke("get_autostart").then((v) => (box.checked = v));
+      box.addEventListener("change", () => {
+        err.textContent = "";
+        invoke("set_autostart", { enabled: box.checked }).catch((e) => {
+          err.textContent = String(e);
+          box.checked = !box.checked;
+        });
+      });
+    </script>
   </body>
 </html>

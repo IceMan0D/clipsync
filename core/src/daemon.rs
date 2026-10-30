@@ -3,7 +3,7 @@
 
 use crate::connection::{Backoff, Conn, ConnState, Offer, Registry, Resolver};
 use crate::pairing::{Incoming, Node};
-use crate::sync::{node_id_from_public_key, NodeId, SyncNode};
+use crate::sync::{node_id_from_public_key, NodeId, SyncEvent, SyncNode};
 use crate::transport::{Error, Listener, Result, Session};
 use clipsync_clipboard::ClipboardBackend;
 use std::io;
@@ -43,6 +43,7 @@ struct Shared {
     to_sync: Mutex<Sender<Handoff>>,
     stop: AtomicBool,
     paused: AtomicBool,
+    events: Mutex<Vec<SyncEvent>>,
 }
 
 pub struct Daemon {
@@ -132,6 +133,7 @@ impl Daemon {
             to_sync: Mutex::new(tx),
             stop: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            events: Mutex::new(Vec::new()),
         });
         let local_addr = cfg.listener.local_addr();
         let mut threads = Vec::new();
@@ -157,6 +159,11 @@ impl Daemon {
             local_addr,
             threads,
         }
+    }
+
+    /// Drain sync events (oversize or dropped items) raised since the last call.
+    pub fn take_events(&self) -> Vec<SyncEvent> {
+        std::mem::take(&mut *self.shared.events.lock().unwrap())
     }
 
     /// Pause or resume clipboard sync. Connections stay up; nothing is sent or applied while paused.
@@ -254,6 +261,10 @@ fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receive
     let mut active: Vec<Active> = Vec::new();
     while !s.stopped() {
         node.set_paused(s.paused.load(Ordering::SeqCst));
+        let evs = node.take_events();
+        if !evs.is_empty() {
+            s.events.lock().unwrap().extend(evs);
+        }
         loop {
             let h = if active.is_empty() {
                 match rx.recv_timeout(Duration::from_millis(50)) {
