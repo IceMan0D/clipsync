@@ -3,3 +3,7 @@ name = "clipsync-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+snow = "0.10.0"
+thiserror = "2.0.21"
