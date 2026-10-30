@@ -35,37 +35,35 @@ fn tiff_to_png(tiff: &[u8]) -> Result<Vec<u8>, ImageError> {
     Ok(png.to_vec())
 }
 
-fn read_image(pb: &NSPasteboard) -> Option<Vec<u8>> {
+fn read_image(pb: &NSPasteboard) -> Result<Option<Vec<u8>>, ClipboardError> {
     if let Some(png) = pb.dataForType(&NSString::from_str(PNG_TYPE)) {
-        return Some(png.to_vec());
+        return Ok(Some(png.to_vec()));
     }
-    let tiff = pb.dataForType(&NSString::from_str(TIFF_TYPE))?;
-    // A TIFF that cannot be converted is skipped; the clipboard is untouched.
-    // Oversize PNGs are still returned so the sync engine can report them.
-    tiff_to_png(&tiff.to_vec()).ok()
+    let Some(tiff) = pb.dataForType(&NSString::from_str(TIFF_TYPE)) else { return Ok(None) };
+    tiff_to_png(&tiff.to_vec()).map(Some).map_err(|e| ClipboardError(e.to_string()))
 }
 
 /// Text or image on the pasteboard (text preferred), or `None` when empty,
 /// unsupported or concealed. Concealed markers are checked before any data
 /// is read.
-fn read_content(pb: &NSPasteboard) -> Option<ClipboardContent> {
+fn read_content(pb: &NSPasteboard) -> Result<Option<ClipboardContent>, ClipboardError> {
     let types: Vec<String> = pb
         .types()
         .map(|arr| arr.iter().map(|t| t.to_string()).collect())
         .unwrap_or_default();
     if macos_is_concealed(&types) {
-        return None;
+        return Ok(None);
     }
     if let Some(s) = pb.stringForType(&NSString::from_str(TEXT_TYPE)) {
-        return Some(ClipboardContent::Text(s.to_string()));
+        return Ok(Some(ClipboardContent::Text(s.to_string())));
     }
-    read_image(pb).map(ClipboardContent::Image)
+    Ok(read_image(pb)?.map(ClipboardContent::Image))
 }
 
 impl ClipboardBackend for MacClipboard {
     fn read(&self) -> Result<Option<ClipboardContent>, ClipboardError> {
         let pb = NSPasteboard::generalPasteboard();
-        Ok(read_content(&pb))
+        read_content(&pb)
     }
 
     fn write(&mut self, content: ClipboardContent) -> Result<(), ClipboardError> {
@@ -94,7 +92,7 @@ impl ClipboardBackend for MacClipboard {
         }
     }
 
-    fn watch(&mut self) -> Result<Receiver<ClipboardContent>, ClipboardError> {
+    fn watch(&mut self) -> Result<Receiver<Result<ClipboardContent, ClipboardError>>, ClipboardError> {
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let pb = NSPasteboard::generalPasteboard();
@@ -106,10 +104,10 @@ impl ClipboardBackend for MacClipboard {
                     continue;
                 }
                 last = now;
-                if let Some(content) = read_content(&pb) {
-                    if tx.send(content).is_err() {
-                        return; // receiver dropped
-                    }
+                match read_content(&pb) {
+                    Ok(None) => {}
+                    Ok(Some(content)) => if tx.send(Ok(content)).is_err() { return; },
+                    Err(error) => if tx.send(Err(error)).is_err() { return; },
                 }
             }
         });

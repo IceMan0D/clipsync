@@ -2,7 +2,7 @@
 
 use crate::transport::{self, Session};
 use clipsync_clipboard::image::{validate_png, ImageError};
-use clipsync_clipboard::{ClipboardBackend, ClipboardContent};
+use clipsync_clipboard::{ClipboardBackend, ClipboardContent, ClipboardError};
 use sha2::{Digest, Sha256};
 use std::sync::mpsc::Receiver;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -198,7 +198,7 @@ fn now_ms() -> u64 {
 pub struct SyncNode<C: ClipboardBackend> {
     engine: Engine,
     clipboard: C,
-    watch: Receiver<ClipboardContent>,
+    watch: Receiver<Result<ClipboardContent, ClipboardError>>,
     paused: bool,
 }
 
@@ -231,10 +231,19 @@ impl<C: ClipboardBackend> SyncNode<C> {
         self.engine.take_events()
     }
 
+    /// Discard offline changes while preserving conversion notices.
+    pub fn discard_local(&mut self) {
+        while let Ok(change) = self.watch.try_recv() {
+            if let Err(error) = change {
+                self.engine.events.push(SyncEvent::ImageDropped(ImageError::Conversion(error.0)));
+            }
+        }
+    }
+
     /// Exchange logical counters. Clipboard changes made while disconnected are
     /// discarded: nothing is sent on connect (live sync only).
     pub fn handshake(&mut self, session: &mut Session) -> Result<(), SyncError> {
-        while self.watch.try_recv().is_ok() {}
+        self.discard_local();
         session.send(TYPE_HELLO, &self.engine.counter().to_be_bytes())?;
         let m = session.recv()?;
         let bytes: [u8; 8] = m
@@ -245,6 +254,7 @@ impl<C: ClipboardBackend> SyncNode<C> {
         if m.content_type != TYPE_HELLO {
             return Err(SyncError::Malformed);
         }
+        self.discard_local();
         self.engine
             .observe_remote_counter(u64::from_be_bytes(bytes));
         Ok(())
@@ -260,10 +270,17 @@ impl<C: ClipboardBackend> SyncNode<C> {
     pub fn pump_local(&mut self, session: &mut Session) -> Result<usize, SyncError> {
         let mut sent = 0;
         if self.paused {
-            while self.watch.try_recv().is_ok() {}
+            self.discard_local();
             return Ok(0);
         }
-        while let Ok(content) = self.watch.try_recv() {
+        while let Ok(change) = self.watch.try_recv() {
+            let content = match change {
+                Ok(content) => content,
+                Err(error) => {
+                    self.engine.events.push(SyncEvent::ImageDropped(ImageError::Conversion(error.0)));
+                    continue;
+                }
+            };
             if let Outgoing::Send(stamp) = self.engine.on_local_change(&content, now_ms()) {
                 let (kind, body) = match &content {
                     ClipboardContent::Text(t) => (TYPE_TEXT, t.as_bytes()),

@@ -27,6 +27,7 @@ struct State {
     controller: Ctl,
     pause: Mutex<PauseState>,
     notices: Mutex<Notices>,
+    discovery: Arc<Discovery>,
 }
 
 impl State {
@@ -91,7 +92,7 @@ fn render(app: &AppHandle, st: &State) -> tauri::Result<Menu<tauri::Wry>> {
     Ok(menu)
 }
 
-fn start_daemon() -> Result<(Arc<Daemon>, Ctl), Box<dyn std::error::Error>> {
+fn start_daemon() -> Result<(Arc<Daemon>, Ctl, Arc<Discovery>), Box<dyn std::error::Error>> {
     let store = Arc::new(KeychainStore::new("clipsync"));
     let identity = store.load_or_create_identity()?;
     let node = Node::new(identity, store);
@@ -104,8 +105,8 @@ fn start_daemon() -> Result<(Arc<Daemon>, Ctl), Box<dyn std::error::Error>> {
         DaemonConfig { node, listener, resolver: book.clone(), auto_dial: true },
         NativeClipboard::new,
     ));
-    let controller = Arc::new(Controller::new(Live::new(daemon.clone(), book, discovery)));
-    Ok((daemon, controller))
+    let controller = Arc::new(Controller::new(Live::new(daemon.clone(), book, discovery.clone())));
+    Ok((daemon, controller, discovery))
 }
 
 fn open_settings(app: &AppHandle) {
@@ -132,7 +133,7 @@ fn set_autostart(enabled: bool) -> Result<(), String> {
 }
 
 pub fn run() {
-    let (daemon, controller) = match start_daemon() {
+    let (daemon, controller, discovery) = match start_daemon() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: {e}");
@@ -144,6 +145,7 @@ pub fn run() {
         controller: controller.clone(),
         pause: Mutex::new(PauseState::default()),
         notices: Mutex::new(Notices::default()),
+        discovery,
     });
 
     // Make the OS login registration match the saved setting (on by default).
@@ -168,7 +170,12 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            clipsync_core::power::install(state.daemon.change_hook());
+            let hook = state.daemon.change_hook();
+            let discovery = state.discovery.clone();
+            clipsync_core::power::install(Arc::new(move || {
+                if let Err(e) = discovery.refresh(&clipsync_core::power::current_addrs()) { eprintln!("mDNS refresh: {e}"); }
+                hook();
+            }));
 
             let handle = app.handle().clone();
             let menu = render(&handle, &state)?;

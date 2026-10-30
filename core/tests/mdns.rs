@@ -23,4 +23,12 @@ fn announced_node_is_resolved_by_another_browser() {
     assert_eq!(da.resolve(&b), vec![std::net::SocketAddr::new(ip, 43999)]);
     assert_eq!(db.resolve(&a), vec![std::net::SocketAddr::new(ip, 43872)]);
     assert!(da.resolve(&a).is_empty(), "must not resolve itself");
+    // A wake/network refresh must retain a working browser and reannounce.
+    da.refresh(&[ip]).unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end && (da.resolve(&b).is_empty() || db.resolve(&a).is_empty()) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(da.resolve(&b), vec![std::net::SocketAddr::new(ip, 43999)]);
+    assert_eq!(db.resolve(&a), vec![std::net::SocketAddr::new(ip, 43872)]);
 }

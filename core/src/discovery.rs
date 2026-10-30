@@ -98,6 +98,9 @@ type Peers = Arc<Mutex<HashMap<String, (NodeId, Vec<SocketAddr>)>>>;
 pub struct Discovery {
     daemon: ServiceDaemon,
     peers: Peers,
+    local_id: NodeId,
+    port: u16,
+    refresh_lock: Mutex<()>,
 }
 
 impl Discovery {
@@ -156,11 +159,31 @@ impl Discovery {
                 }
             }
         });
-        Ok(Discovery { daemon, peers })
+        Ok(Discovery { daemon, peers, local_id, port, refresh_lock: Mutex::new(()) })
     }
 }
 
 impl Discovery {
+    /// Re-register the local service on the current interfaces and discard stale peer addresses.
+    pub fn refresh(&self, addrs: &[IpAddr]) -> Result<(), DiscoveryError> {
+        let _guard = self.refresh_lock.lock().unwrap();
+        let hex_id = hex::encode(self.local_id);
+        let instance = &hex_id[..16];
+        let fullname = format!("{instance}.{SERVICE_TYPE}");
+        let rx = self.daemon.unregister(&fullname)?;
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
+        self.daemon.disable_interface(IfKind::All)?;
+        for addr in addrs { self.daemon.enable_interface(IfKind::Addr(*addr))?; }
+        self.peers.lock().unwrap().clear();
+        if !addrs.is_empty() {
+            let info = ServiceInfo::new(SERVICE_TYPE, instance,
+                &format!("clipsync-{instance}.local."), addrs, self.port,
+                &[(TXT_ID, hex_id.as_str())][..])?;
+            self.daemon.register(info)?;
+        }
+        Ok(())
+    }
+
     /// Every peer currently seen on the LAN with its addresses (paired or not).
     pub fn discovered(&self) -> Vec<(NodeId, Vec<SocketAddr>)> {
         self.peers.lock().unwrap().values().cloned().collect()

@@ -109,6 +109,19 @@ fn le32(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
 
+/// Try DIB representations in priority order, allowing a malformed preferred format
+/// to fall back to a usable legacy representation.
+pub fn first_decodable_dib<'a>(dibs: impl IntoIterator<Item = &'a [u8]>) -> Result<Option<Vec<u8>>, ImageError> {
+    let mut last_error = None;
+    for dib in dibs {
+        match dib_to_png(dib) {
+            Ok(png) => return Ok(Some(png)),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match last_error { Some(error) => Err(error), None => Ok(None) }
+}
+
 /// Convert a packed DIB (`CF_DIB` / `CF_DIBV5` payload) to PNG. Supports
 /// 24 and 32 bpp, `BI_RGB` / `BI_BITFIELDS`, top-down and bottom-up. 32 bpp
 /// keeps alpha only when an alpha mask is declared (V4/V5 headers).
@@ -237,6 +250,14 @@ pub fn png_to_dib(png: &[u8]) -> Result<Vec<u8>, ImageError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn malformed_preferred_dib_falls_back_to_legacy() {
+        let png = super::rgba_to_png(1, 1, &[1, 2, 3, 255]).unwrap();
+        let legacy = super::png_to_dib(&png).unwrap();
+        let converted = super::first_decodable_dib([&[0u8][..], legacy.as_slice()]).unwrap().unwrap();
+        assert_eq!(super::png_to_rgba(&converted).unwrap().2, vec![1, 2, 3, 255]);
+        assert!(super::first_decodable_dib([&[0u8][..]]).is_err());
+    }
     use super::*;
 
     /// Minimal PNG prefix: signature + IHDR header declaring `w` x `h`.

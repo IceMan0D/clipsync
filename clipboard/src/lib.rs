@@ -51,7 +51,7 @@ pub trait ClipboardBackend {
     /// Replace the clipboard content.
     fn write(&mut self, content: ClipboardContent) -> Result<(), ClipboardError>;
     /// Subscribe to clipboard changes.
-    fn watch(&mut self) -> Result<Receiver<ClipboardContent>, ClipboardError>;
+    fn watch(&mut self) -> Result<Receiver<Result<ClipboardContent, ClipboardError>>, ClipboardError>;
 }
 
 #[cfg(test)]
@@ -78,7 +78,7 @@ mod tests {
         let mut clip = MockClipboard::new();
         let rx = clip.watch().unwrap();
         clip.write(ClipboardContent::Text("a".into())).unwrap();
-        assert_eq!(rx.try_recv().unwrap(), ClipboardContent::Text("a".into()));
+        assert_eq!(rx.try_recv().unwrap().unwrap(), ClipboardContent::Text("a".into()));
     }
 
     #[test]

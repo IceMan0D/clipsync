@@ -70,6 +70,11 @@ pub struct Daemon {
 }
 
 impl Shared {
+    fn network_changed(&self) {
+        self.kick.fetch_add(1, Ordering::SeqCst);
+        self.registry.reset();
+    }
+
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
@@ -272,16 +277,14 @@ impl Daemon {
     /// The OS reported sleep/wake or a network change: tear down every connection now
     /// and make the dial loops re-probe immediately, skipping any backoff delay.
     pub fn network_changed(&self) {
-        self.shared.kick.fetch_add(1, Ordering::SeqCst);
-        self.shared.registry.reset();
+        self.shared.network_changed();
     }
 
     /// A callback equivalent to `network_changed`, for OS hooks that outlive borrows of the daemon.
     pub fn change_hook(&self) -> Arc<dyn Fn() + Send + Sync> {
         let shared = self.shared.clone();
         Arc::new(move || {
-            shared.kick.fetch_add(1, Ordering::SeqCst);
-            shared.registry.reset();
+            shared.network_changed();
         })
     }
 
@@ -405,6 +408,7 @@ fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receive
             }
         }
 
+        if active.is_empty() { node.discard_local(); }
         let mut i = 0;
         while i < active.len() {
             let a = &mut active[i];

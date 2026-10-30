@@ -21,7 +21,7 @@ impl ClipboardBackend for Flaky {
         }
         self.inner.write(c)
     }
-    fn watch(&mut self) -> Result<Receiver<ClipboardContent>, ClipboardError> {
+    fn watch(&mut self) -> Result<Receiver<Result<ClipboardContent, ClipboardError>>, ClipboardError> {
         self.inner.watch()
     }
 }

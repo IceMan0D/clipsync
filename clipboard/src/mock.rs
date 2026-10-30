@@ -5,7 +5,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 #[derive(Default)]
 pub struct MockClipboard {
     current: Option<ClipboardContent>,
-    watchers: Vec<Sender<ClipboardContent>>,
+    watchers: Vec<Sender<Result<ClipboardContent, ClipboardError>>>,
 }
 
 impl MockClipboard {
@@ -21,11 +21,11 @@ impl ClipboardBackend for MockClipboard {
 
     fn write(&mut self, content: ClipboardContent) -> Result<(), ClipboardError> {
         self.current = Some(content.clone());
-        self.watchers.retain(|w| w.send(content.clone()).is_ok());
+        self.watchers.retain(|w| w.send(Ok(content.clone())).is_ok());
         Ok(())
     }
 
-    fn watch(&mut self) -> Result<Receiver<ClipboardContent>, ClipboardError> {
+    fn watch(&mut self) -> Result<Receiver<Result<ClipboardContent, ClipboardError>>, ClipboardError> {
         let (tx, rx) = channel();
         self.watchers.push(tx);
         Ok(rx)

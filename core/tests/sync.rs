@@ -141,3 +141,46 @@ fn reconnecting_node_receives_nothing_it_missed() {
     a.recv_one(&mut sa).unwrap();
     assert_eq!(a.clipboard().read().unwrap(), Some(text("live")));
 }
+
+#[test]
+fn changes_during_hello_are_not_sent_after_handshake() {
+    use clipsync_clipboard::ClipboardError;
+    use std::sync::{Arc, Mutex, mpsc::Receiver};
+    #[derive(Clone, Default)]
+    struct Shared(Arc<Mutex<MockClipboard>>);
+    impl ClipboardBackend for Shared {
+        fn read(&self) -> Result<Option<ClipboardContent>, ClipboardError> { self.0.lock().unwrap().read() }
+        fn write(&mut self, content: ClipboardContent) -> Result<(), ClipboardError> { self.0.lock().unwrap().write(content) }
+        fn watch(&mut self) -> Result<Receiver<Result<ClipboardContent, ClipboardError>>, ClipboardError> { self.0.lock().unwrap().watch() }
+    }
+    let (ka, kb) = (Keypair::generate(), Keypair::generate());
+    let (mut sa, mut sb) = link(&ka, &kb);
+    let mut clip = Shared::default();
+    let mut a = SyncNode::new(clip.clone(), &ka.public);
+    let h = thread::spawn(move || { a.handshake(&mut sa).unwrap(); (a, sa) });
+    let hello = sb.recv().unwrap();
+    assert_eq!(hello.content_type, 0);
+    clip.write(text("offline" )).unwrap();
+    sb.send(0, &0u64.to_be_bytes()).unwrap();
+    let (mut a, mut sa) = h.join().unwrap();
+    assert_eq!(a.pump_local(&mut sa).unwrap(), 0);
+    clip.write(text("online")).unwrap();
+    assert_eq!(a.pump_local(&mut sa).unwrap(), 1);
+}
+
+#[test]
+fn conversion_errors_are_reported_even_when_disconnected() {
+    use clipsync_clipboard::ClipboardError;
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    struct BrokenClipboard(Option<Receiver<Result<ClipboardContent, ClipboardError>>>);
+    impl ClipboardBackend for BrokenClipboard {
+        fn read(&self) -> Result<Option<ClipboardContent>, ClipboardError> { Ok(None) }
+        fn write(&mut self, _: ClipboardContent) -> Result<(), ClipboardError> { Ok(()) }
+        fn watch(&mut self) -> Result<Receiver<Result<ClipboardContent, ClipboardError>>, ClipboardError> { Ok(self.0.take().unwrap()) }
+    }
+    let (tx, rx): (Sender<Result<ClipboardContent, ClipboardError>>, _) = channel();
+    let mut node = SyncNode::new(BrokenClipboard(Some(rx)), &[1; 32]);
+    tx.send(Err(ClipboardError("invalid TIFF".into()))).unwrap();
+    node.discard_local();
+    assert_eq!(node.take_events(), vec![SyncEvent::ImageDropped(clipsync_clipboard::image::ImageError::Conversion("invalid TIFF".into()))]);
+}

@@ -4,7 +4,7 @@
 //! real Windows so far (see the manual checklist in the PR/ticket).
 
 use crate::conceal::windows_is_concealed;
-use crate::image::{dib_to_png, png_to_dib, png_to_dibv5, validate_png};
+use crate::image::{first_decodable_dib, png_to_dib, png_to_dibv5, validate_png};
 use crate::retry::retry;
 use crate::{ClipboardBackend, ClipboardContent, ClipboardError};
 use std::ptr::{null, null_mut};
@@ -137,13 +137,21 @@ fn read_content() -> Result<Option<ClipboardContent>, ClipboardError> {
             return Ok(Some(ClipboardContent::Image(png)));
         }
     }
+    let mut dibs = Vec::new();
+    let mut unreadable = false;
     for dib_fmt in [CF_DIBV5, CF_DIB] {
         if has(dib_fmt) {
-            // A DIB that cannot be converted leaves the clipboard unsynced.
-            return Ok(format_bytes(&open, dib_fmt)
-                .and_then(|d| dib_to_png(&d).ok())
-                .map(ClipboardContent::Image));
+            match format_bytes(&open, dib_fmt) {
+                Some(bytes) => dibs.push(bytes),
+                None => unreadable = true,
+            }
         }
+    }
+    match first_decodable_dib(dibs.iter().map(Vec::as_slice)) {
+        Ok(Some(png)) => return Ok(Some(ClipboardContent::Image(png))),
+        Err(e) => return Err(ClipboardError(e.to_string())),
+        Ok(None) if unreadable => return Err(ClipboardError("unable to read DIB".into())),
+        Ok(None) => {}
     }
     Ok(None)
 }
@@ -261,7 +269,7 @@ impl ClipboardBackend for WindowsClipboard {
         write_formats(&formats_for(&content)?)
     }
 
-    fn watch(&mut self) -> Result<Receiver<ClipboardContent>, ClipboardError> {
+    fn watch(&mut self) -> Result<Receiver<Result<ClipboardContent, ClipboardError>>, ClipboardError> {
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let mut last = unsafe { GetClipboardSequenceNumber() };
@@ -272,10 +280,10 @@ impl ClipboardBackend for WindowsClipboard {
                     continue;
                 }
                 last = now;
-                if let Ok(Some(content)) = read_content() {
-                    if tx.send(content).is_err() {
-                        return;
-                    }
+                match read_content() {
+                    Ok(None) => {}
+                    Ok(Some(content)) => if tx.send(Ok(content)).is_err() { return; },
+                    Err(error) => if tx.send(Err(error)).is_err() { return; },
                 }
             }
         });

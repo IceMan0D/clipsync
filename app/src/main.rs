@@ -14,7 +14,6 @@ use clipsync_core::transport::Listener;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
-const DEFAULT_PORT: &str = "43872";
 
 fn book_path() -> std::path::PathBuf {
     let base = std::env::var_os("APPDATA")
@@ -67,7 +66,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let addr = args
                 .get(1)
                 .cloned()
-                .unwrap_or_else(|| format!("0.0.0.0:{DEFAULT_PORT}"));
+                .unwrap_or_else(|| format!("0.0.0.0:{PORT}"));
             let listener = Listener::bind(addr, node.keypair().clone(), vec![])?;
             node.start_pairing();
             println!("Pairing window open for 2 minutes on {}", listener.local_addr());
@@ -110,7 +109,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 NativeClipboard::new,
             );
-            clipsync_core::power::install(daemon.change_hook());
+            let hook = daemon.change_hook();
+            clipsync_core::power::install(Arc::new(move || {
+                if let Err(e) = discovery.refresh(&clipsync_core::power::current_addrs()) { eprintln!("mDNS refresh: {e}"); }
+                hook();
+            }));
             println!("Syncing with {paired} paired device(s). Ctrl-C to quit.");
             #[cfg(target_os = "macos")]
             clipsync_core::power::wake::run_event_loop();

@@ -25,7 +25,7 @@ impl ClipboardBackend for SharedClip {
     fn write(&mut self, c: ClipboardContent) -> Result<(), ClipboardError> {
         self.0.lock().unwrap().write(c)
     }
-    fn watch(&mut self) -> Result<Receiver<ClipboardContent>, ClipboardError> {
+    fn watch(&mut self) -> Result<Receiver<Result<ClipboardContent, ClipboardError>>, ClipboardError> {
         self.0.lock().unwrap().watch()
     }
 }
