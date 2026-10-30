@@ -1,9 +1,7 @@
 //! Headless end-to-end tests of the daemon over loopback TCP with mock clipboards
 //! and an injected address resolver.
 
-use clipsync_clipboard::{
-    ClipboardBackend, ClipboardContent, ClipboardError, MockClipboard,
-};
+use clipsync_clipboard::{ClipboardBackend, ClipboardContent, ClipboardError, MockClipboard};
 use clipsync_core::connection::{ConnState, Resolver};
 use clipsync_core::daemon::{Daemon, DaemonConfig};
 use clipsync_core::keystore::{KeyStore, MemoryKeyStore};

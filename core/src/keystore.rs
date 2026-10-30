@@ -91,7 +91,11 @@ impl KeychainStore {
         let kp = crate::transport::Keypair::generate();
         self.write(
             "identity",
-            &format!("{}:{}", hex::encode(&kp.public), hex::encode(kp.private_bytes())),
+            &format!(
+                "{}:{}",
+                hex::encode(&kp.public),
+                hex::encode(kp.private_bytes())
+            ),
         )?;
         Ok(kp)
     }

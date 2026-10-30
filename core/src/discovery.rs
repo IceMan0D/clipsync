@@ -20,9 +20,27 @@ pub struct IfaceInfo {
 
 /// Name fragments (lowercase) of virtual, bridge, tunnel and VM adapters.
 const VIRTUAL_NAME_MARKERS: &[&str] = &[
-    "vethernet", "hyper-v", "wsl", "vmware", "vmnet", "vmenet", "virtualbox", "vboxnet",
-    "docker", "veth", "virbr", "br-", "bridge", "utun", "awdl", "llw", "anpi", "tun", "tap",
-    "loopback", "tailscale",
+    "vethernet",
+    "hyper-v",
+    "wsl",
+    "vmware",
+    "vmnet",
+    "vmenet",
+    "virtualbox",
+    "vboxnet",
+    "docker",
+    "veth",
+    "virbr",
+    "br-",
+    "bridge",
+    "utun",
+    "awdl",
+    "llw",
+    "anpi",
+    "tun",
+    "tap",
+    "loopback",
+    "tailscale",
 ];
 
 /// Whether an interface name looks like a virtual/bridge/VM adapter.
@@ -56,7 +74,10 @@ pub fn system_interfaces() -> Vec<IfaceInfo> {
         .unwrap_or_default()
         .into_iter()
         .filter(|i| i.is_oper_up())
-        .map(|i| IfaceInfo { name: i.name.clone(), ip: i.ip() })
+        .map(|i| IfaceInfo {
+            name: i.name.clone(),
+            ip: i.ip(),
+        })
         .collect()
 }
 
@@ -124,7 +145,9 @@ impl Discovery {
                             .filter(|a| !a.is_link_local())
                             .map(|a| SocketAddr::new(IpAddr::V4(a), svc.get_port()))
                             .collect();
-                        map.lock().unwrap().insert(svc.get_fullname().to_string(), (id, addrs));
+                        map.lock()
+                            .unwrap()
+                            .insert(svc.get_fullname().to_string(), (id, addrs));
                     }
                     ServiceEvent::ServiceRemoved(_, fullname) => {
                         map.lock().unwrap().remove(&fullname);
@@ -171,7 +194,10 @@ mod tests {
         let ifs = [iface("en0", "192.168.1.20"), iface("Ethernet", "10.0.0.5")];
         assert_eq!(
             announce_addrs(&ifs),
-            vec!["192.168.1.20".parse::<IpAddr>().unwrap(), "10.0.0.5".parse().unwrap()]
+            vec![
+                "192.168.1.20".parse::<IpAddr>().unwrap(),
+                "10.0.0.5".parse().unwrap()
+            ]
         );
     }
 
@@ -183,7 +209,10 @@ mod tests {
             iface("lo0", "127.0.0.1"),
             iface("en2", "192.168.1.9"),
         ];
-        assert_eq!(announce_addrs(&ifs), vec!["192.168.1.9".parse::<IpAddr>().unwrap()]);
+        assert_eq!(
+            announce_addrs(&ifs),
+            vec!["192.168.1.9".parse::<IpAddr>().unwrap()]
+        );
     }
 
     #[test]

@@ -233,7 +233,12 @@ impl Session {
         let mut b = [0u8; 1];
         match self.stream.peek(&mut b) {
             Ok(_) => Ok(true),
-            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
                 Ok(false)
             }
             Err(e) => Err(e),

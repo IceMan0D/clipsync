@@ -72,9 +72,17 @@ impl Shared {
         let Ok(handle) = session.socket_handle() else {
             return;
         };
-        let conn = Conn { local: self.local_id, remote: peer, dialed };
+        let conn = Conn {
+            local: self.local_id,
+            remote: peer,
+            dialed,
+        };
         if let Offer::Accepted(token) = self.registry.offer(conn, handle) {
-            let _ = self.to_sync.lock().unwrap().send(Handoff { session, peer, token });
+            let _ = self.to_sync.lock().unwrap().send(Handoff {
+                session,
+                peer,
+                token,
+            });
         }
     }
 
@@ -90,7 +98,10 @@ impl Shared {
     }
 
     fn try_addrs(&self, peer_key: &[u8], peer: &NodeId) -> Result<Session> {
-        let mut last = Error::Io(io::Error::new(io::ErrorKind::NotFound, "no address for peer"));
+        let mut last = Error::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no address for peer",
+        ));
         for addr in self.resolver.resolve(peer) {
             match self.node.dial_trusted_timeout(&addr, CONNECT_TIMEOUT) {
                 Ok(s) if s.remote_static() == peer_key => return Ok(s),
@@ -139,7 +150,11 @@ impl Daemon {
                 threads.push(thread::spawn(move || dial_loop(&s, key)));
             }
         }
-        Daemon { shared, local_addr, threads }
+        Daemon {
+            shared,
+            local_addr,
+            threads,
+        }
     }
 
     pub fn local_addr(&self) -> std::net::SocketAddr {
@@ -147,7 +162,9 @@ impl Daemon {
     }
 
     pub fn peer_state(&self, peer_key: &[u8]) -> ConnState {
-        self.shared.registry.state(&node_id_from_public_key(peer_key))
+        self.shared
+            .registry
+            .state(&node_id_from_public_key(peer_key))
     }
 
     /// Number of live connections (at most one per peer).
@@ -157,7 +174,9 @@ impl Daemon {
 
     /// Whether the live connection to the peer was dialed by us (None if not connected).
     pub fn active_dialed(&self, peer_key: &[u8]) -> Option<bool> {
-        self.shared.registry.dialed(&node_id_from_public_key(peer_key))
+        self.shared
+            .registry
+            .dialed(&node_id_from_public_key(peer_key))
     }
 
     /// Make a single dial attempt right now.
@@ -241,7 +260,11 @@ fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receive
             if node.handshake(&mut session).is_ok() {
                 let _ = session.set_read_timeout(None);
                 s.registry.mark_connected(&h.peer, h.token);
-                active.push(Active { session, peer: h.peer, token: h.token });
+                active.push(Active {
+                    session,
+                    peer: h.peer,
+                    token: h.token,
+                });
             } else {
                 s.registry.release(&h.peer, h.token);
             }
