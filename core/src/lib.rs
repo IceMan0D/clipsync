@@ -1,5 +1,6 @@
 //! Protocol, crypto, discovery and network.
 
+pub mod addresses;
 pub mod connection;
 pub mod daemon;
 pub mod discovery;

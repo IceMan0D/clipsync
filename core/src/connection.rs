@@ -143,7 +143,12 @@ impl Registry {
         let token = g.next_token;
         g.slots.insert(
             conn.remote,
-            Slot { conn, token, phase: ConnState::Handshaking, handle },
+            Slot {
+                conn,
+                token,
+                phase: ConnState::Handshaking,
+                handle,
+            },
         );
         Offer::Accepted(token)
     }
@@ -170,7 +175,12 @@ impl Registry {
 
     /// Whether the live connection to `peer` was dialed by the local node.
     pub fn dialed(&self, peer: &NodeId) -> Option<bool> {
-        self.inner.lock().unwrap().slots.get(peer).map(|s| s.conn.dialed)
+        self.inner
+            .lock()
+            .unwrap()
+            .slots
+            .get(peer)
+            .map(|s| s.conn.dialed)
     }
 
     /// Close every connection and forget it, so the peers can be re-dialed immediately.
@@ -208,19 +218,39 @@ mod tests {
     #[test]
     fn connection_initiated_by_lower_node_id_is_preferred() {
         // (dialed_by_us, local, remote)
-        let low_dialed = Conn { local: LOW, remote: HIGH, dialed: true };
-        let high_dialed = Conn { local: LOW, remote: HIGH, dialed: false };
+        let low_dialed = Conn {
+            local: LOW,
+            remote: HIGH,
+            dialed: true,
+        };
+        let high_dialed = Conn {
+            local: LOW,
+            remote: HIGH,
+            dialed: false,
+        };
         assert!(low_dialed.beats(&high_dialed));
         assert!(!high_dialed.beats(&low_dialed));
         // same connection seen from the other side gives the same verdict
-        let low_dialed_peer_view = Conn { local: HIGH, remote: LOW, dialed: false };
-        let high_dialed_peer_view = Conn { local: HIGH, remote: LOW, dialed: true };
+        let low_dialed_peer_view = Conn {
+            local: HIGH,
+            remote: LOW,
+            dialed: false,
+        };
+        let high_dialed_peer_view = Conn {
+            local: HIGH,
+            remote: LOW,
+            dialed: true,
+        };
         assert!(low_dialed_peer_view.beats(&high_dialed_peer_view));
     }
 
     #[test]
     fn same_direction_duplicate_does_not_beat_existing() {
-        let a = Conn { local: LOW, remote: HIGH, dialed: true };
+        let a = Conn {
+            local: LOW,
+            remote: HIGH,
+            dialed: true,
+        };
         assert!(!a.beats(&a));
     }
 
@@ -233,8 +263,16 @@ mod tests {
 
     #[test]
     fn registry_keeps_the_lower_initiated_connection_in_either_arrival_order() {
-        let low_dialed = Conn { local: LOW, remote: HIGH, dialed: true };
-        let high_dialed = Conn { local: LOW, remote: HIGH, dialed: false };
+        let low_dialed = Conn {
+            local: LOW,
+            remote: HIGH,
+            dialed: true,
+        };
+        let high_dialed = Conn {
+            local: LOW,
+            remote: HIGH,
+            dialed: false,
+        };
         for first_is_winner in [true, false] {
             let r = Registry::new();
             let (first, second) = if first_is_winner {
@@ -253,9 +291,17 @@ mod tests {
     #[test]
     fn release_of_a_replaced_connection_does_not_drop_its_successor() {
         let r = Registry::new();
-        let c = Conn { local: LOW, remote: HIGH, dialed: true };
-        let Offer::Accepted(old) = r.offer(c, sock()) else { panic!() };
-        let Offer::Accepted(new) = r.offer(c, sock()) else { panic!() };
+        let c = Conn {
+            local: LOW,
+            remote: HIGH,
+            dialed: true,
+        };
+        let Offer::Accepted(old) = r.offer(c, sock()) else {
+            panic!()
+        };
+        let Offer::Accepted(new) = r.offer(c, sock()) else {
+            panic!()
+        };
         r.release(&HIGH, old);
         assert_eq!(r.count(), 1);
         r.mark_connected(&HIGH, new);

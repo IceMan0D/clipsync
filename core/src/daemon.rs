@@ -50,6 +50,7 @@ struct Shared {
     /// Bumped by `network_changed`; dial loops wake and drop their backoff when it moves.
     kick: AtomicU64,
     established: AtomicU64,
+    paused: AtomicBool,
 }
 
 pub struct Daemon {
@@ -93,9 +94,17 @@ impl Shared {
         let Ok(handle) = session.socket_handle() else {
             return;
         };
-        let conn = Conn { local: self.local_id, remote: peer, dialed };
+        let conn = Conn {
+            local: self.local_id,
+            remote: peer,
+            dialed,
+        };
         if let Offer::Accepted(token) = self.registry.offer(conn, handle) {
-            let _ = self.to_sync.lock().unwrap().send(Handoff { session, peer, token });
+            let _ = self.to_sync.lock().unwrap().send(Handoff {
+                session,
+                peer,
+                token,
+            });
         }
     }
 
@@ -111,7 +120,10 @@ impl Shared {
     }
 
     fn try_addrs(&self, peer_key: &[u8], peer: &NodeId) -> Result<Session> {
-        let mut last = Error::Io(io::Error::new(io::ErrorKind::NotFound, "no address for peer"));
+        let mut last = Error::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no address for peer",
+        ));
         for addr in self.resolver.resolve(peer) {
             match self.node.dial_trusted_timeout(&addr, CONNECT_TIMEOUT) {
                 Ok(s) if s.remote_static() == peer_key => return Ok(s),
@@ -142,6 +154,7 @@ impl Daemon {
             stop: AtomicBool::new(false),
             kick: AtomicU64::new(0),
             established: AtomicU64::new(0),
+            paused: AtomicBool::new(false),
         });
         let local_addr = cfg.listener.local_addr();
         let mut threads = Vec::new();
@@ -166,7 +179,20 @@ impl Daemon {
                 threads.push(thread::spawn(move || dial_loop(&s, key)));
             }
         }
-        Daemon { shared, local_addr, threads }
+        Daemon {
+            shared,
+            local_addr,
+            threads,
+        }
+    }
+
+    /// Pause or resume clipboard sync. Connections stay up; nothing is sent or applied while paused.
+    pub fn set_paused(&self, paused: bool) {
+        self.shared.paused.store(paused, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.shared.paused.load(Ordering::SeqCst)
     }
 
     pub fn local_addr(&self) -> std::net::SocketAddr {
@@ -174,7 +200,9 @@ impl Daemon {
     }
 
     pub fn peer_state(&self, peer_key: &[u8]) -> ConnState {
-        self.shared.registry.state(&node_id_from_public_key(peer_key))
+        self.shared
+            .registry
+            .state(&node_id_from_public_key(peer_key))
     }
 
     /// Number of live connections (at most one per peer).
@@ -184,7 +212,9 @@ impl Daemon {
 
     /// Whether the live connection to the peer was dialed by us (None if not connected).
     pub fn active_dialed(&self, peer_key: &[u8]) -> Option<bool> {
-        self.shared.registry.dialed(&node_id_from_public_key(peer_key))
+        self.shared
+            .registry
+            .dialed(&node_id_from_public_key(peer_key))
     }
 
     /// Total number of connections that completed the handshake since start.
@@ -197,6 +227,15 @@ impl Daemon {
     pub fn network_changed(&self) {
         self.shared.kick.fetch_add(1, Ordering::SeqCst);
         self.shared.registry.reset();
+    }
+
+    /// A callback equivalent to `network_changed`, for OS hooks that outlive borrows of the daemon.
+    pub fn change_hook(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let shared = self.shared.clone();
+        Arc::new(move || {
+            shared.kick.fetch_add(1, Ordering::SeqCst);
+            shared.registry.reset();
+        })
     }
 
     /// Make a single dial attempt right now.
@@ -272,6 +311,7 @@ struct Active {
 fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receiver<Handoff>) {
     let mut active: Vec<Active> = Vec::new();
     while !s.stopped() {
+        node.set_paused(s.paused.load(Ordering::SeqCst));
         loop {
             let h = if active.is_empty() {
                 match rx.recv_timeout(Duration::from_millis(50)) {

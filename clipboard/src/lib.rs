@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::mpsc::Receiver;
 
 pub mod conceal;
+pub mod image;
 mod mock;
 mod retry;
 pub use mock::MockClipboard;

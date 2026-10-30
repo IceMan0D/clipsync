@@ -174,6 +174,20 @@ pub mod wake {
     }
 }
 
+/// Start every available hook (address-change polling plus native wake) for the life of
+/// the process. On macOS call this from the main thread, whose run loop must run
+/// (Tauri's does; a plain CLI should call `wake::run_event_loop`).
+pub fn install(on_change: Arc<dyn Fn() + Send + Sync>) {
+    let f = on_change.clone();
+    std::mem::forget(NetworkWatcher::start_system(move || f()));
+    #[cfg(target_os = "macos")]
+    std::mem::forget(wake::watch(move || on_change()));
+    #[cfg(windows)]
+    wake::watch(move || on_change());
+    #[cfg(not(any(target_os = "macos", windows)))]
+    drop(on_change);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

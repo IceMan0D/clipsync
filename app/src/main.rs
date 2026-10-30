@@ -1,17 +1,43 @@
-// Stub for the Tauri shell; the real UI arrives in a later ticket.
-// For now: a CLI for SAS pairing and device management.
+// Entry point: tray app by default, plus a CLI for SAS pairing and device management.
+mod tray;
+
 use clipsync_clipboard::NativeClipboard;
+use clipsync_core::addresses::{CandidateResolver, PeerAddr};
+use clipsync_core::connection::Resolver;
 use clipsync_core::daemon::{Daemon, DaemonConfig, DEFAULT_PORT as PORT};
 use clipsync_core::discovery::{announce_addrs, system_interfaces, Discovery};
 use clipsync_core::keystore::KeychainStore;
-use clipsync_core::power::NetworkWatcher;
-use clipsync_core::sync::node_id_from_public_key;
 use clipsync_core::pairing::{Incoming, Node, PairingAttempt};
+use clipsync_core::sync::node_id_from_public_key;
 use clipsync_core::transport::Listener;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
 const DEFAULT_PORT: &str = "43872";
+
+fn book_path() -> std::path::PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))
+        .unwrap_or_default();
+    base.join("clipsync").join("addresses.txt")
+}
+
+fn load_book(primary: Option<Arc<dyn Resolver>>) -> CandidateResolver {
+    let book = CandidateResolver::new(primary);
+    if let Ok(text) = std::fs::read_to_string(book_path()) {
+        book.load_text(&text);
+    }
+    book
+}
+
+fn save_book(book: &CandidateResolver) -> io::Result<()> {
+    let p = book_path();
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(p, book.to_text())
+}
 
 fn prompt_confirm(att: &PairingAttempt) -> bool {
     println!("Pairing code: {}", att.sas());
@@ -24,6 +50,11 @@ fn prompt_confirm(att: &PairingAttempt) -> bool {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Launched with no subcommand (e.g. from the app bundle): run as the tray app.
+    if args.is_empty() || args[0] == "app" {
+        tray::run();
+        return Ok(());
+    }
     let store = Arc::new(KeychainStore::new("clipsync"));
     let node = Node::new(store.load_or_create_identity()?, store);
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
@@ -65,27 +96,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if paired == 0 {
                 println!("No paired devices yet: run `clipsync pair-listen` on one machine and `pair-connect` on the other.");
             }
-            let daemon = Arc::new(Daemon::start(
-                DaemonConfig { node, listener, resolver: discovery.clone(), auto_dial: true },
+            let daemon = Daemon::start(
+                DaemonConfig {
+                    node,
+                    listener,
+                    resolver: Arc::new(load_book(Some(discovery.clone()))),
+                    auto_dial: true,
+                },
                 NativeClipboard::new,
-            ));
-            let d = daemon.clone();
-            let _net = NetworkWatcher::start_system(move || d.network_changed());
+            );
+            clipsync_core::power::install(daemon.change_hook());
             println!("Syncing with {paired} paired device(s). Ctrl-C to quit.");
             #[cfg(target_os = "macos")]
-            {
-                let d = daemon.clone();
-                let _wake = clipsync_core::power::wake::watch(move || d.network_changed());
-                clipsync_core::power::wake::run_event_loop();
-            }
-            #[cfg(windows)]
-            {
-                let d = daemon.clone();
-                clipsync_core::power::wake::watch(move || d.network_changed());
-            }
+            clipsync_core::power::wake::run_event_loop();
             loop {
                 std::thread::park();
             }
+        }
+        ["add-address", key, addr] => {
+            let key = hex::decode(key)?;
+            if !node.paired_devices()?.contains(&key) {
+                return Err("no such paired device (see `clipsync devices`)".into());
+            }
+            let book = load_book(None);
+            book.add_manual(node_id_from_public_key(&key), PeerAddr::parse(addr)?);
+            save_book(&book)?;
+            println!("Added.");
         }
         ["devices"] => {
             for key in node.paired_devices()? {
@@ -96,7 +132,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             node.remove_device(&hex::decode(key)?)?;
             println!("Removed.");
         }
-        _ => eprintln!("usage: clipsync run [port] | pair-listen [addr] | pair-connect <addr> | devices | remove <hex-key>"),
+        _ => eprintln!("usage: clipsync [app] | run [port] | pair-listen [addr] | pair-connect <addr> | devices | add-address <hex-key> <addr> | remove <hex-key>"),
     }
     Ok(())
 }

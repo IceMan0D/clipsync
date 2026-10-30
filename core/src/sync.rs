@@ -1,6 +1,7 @@
 //! Sync engine: HLC last-write-wins ordering, dedupe, echo suppression, text limits.
 
 use crate::transport::{self, Session};
+use clipsync_clipboard::image::{validate_png, ImageError};
 use clipsync_clipboard::{ClipboardBackend, ClipboardContent};
 use sha2::{Digest, Sha256};
 use std::sync::mpsc::Receiver;
@@ -40,6 +41,9 @@ impl Stamp {
 pub enum SyncEvent {
     /// Text exceeded `MAX_TEXT_BYTES` and was skipped.
     TextTooLarge { bytes: usize },
+    /// An image was dropped (size cap, megapixel cap, bad PNG or failed
+    /// conversion); the local clipboard was left untouched.
+    ImageDropped(ImageError),
 }
 
 /// What to do with a local clipboard change.
@@ -104,20 +108,28 @@ impl Engine {
         std::mem::take(&mut self.events)
     }
 
+    fn push_event(&mut self, e: SyncEvent) {
+        self.events.push(e);
+    }
+
     fn check_size(&mut self, c: &ClipboardContent) -> bool {
-        if let ClipboardContent::Text(t) = c {
-            if t.len() > MAX_TEXT_BYTES {
+        match c {
+            ClipboardContent::Text(t) if t.len() > MAX_TEXT_BYTES => {
                 self.events.push(SyncEvent::TextTooLarge { bytes: t.len() });
-                return false;
+                false
             }
+            ClipboardContent::Image(png) => match validate_png(png) {
+                Ok(_) => true,
+                Err(e) => {
+                    self.events.push(SyncEvent::ImageDropped(e));
+                    false
+                }
+            },
+            _ => true,
         }
-        true
     }
 
     pub fn on_local_change(&mut self, content: &ClipboardContent, now_ms: u64) -> Outgoing {
-        if !matches!(content, ClipboardContent::Text(_)) {
-            return Outgoing::Unsupported;
-        }
         if !self.check_size(content) {
             return Outgoing::TooLarge;
         }
@@ -145,7 +157,7 @@ impl Engine {
 
     pub fn on_remote(&mut self, stamp: Stamp, content: &ClipboardContent, now_ms: u64) -> Incoming {
         self.observe_remote_counter(stamp.counter);
-        if !matches!(content, ClipboardContent::Text(_)) || !self.check_size(content) {
+        if !self.check_size(content) {
             return Incoming::Reject;
         }
         if let Some(latest) = &self.latest {
@@ -161,7 +173,8 @@ impl Engine {
 
 const TYPE_HELLO: u8 = 0;
 const TYPE_TEXT: u8 = 1;
-const TYPE_PING: u8 = 2;
+const TYPE_IMAGE: u8 = 2;
+const TYPE_PING: u8 = 3;
 /// Item payload: ts_ms(8) counter(8) node(32) body.
 const ITEM_HEADER: usize = 48;
 
@@ -186,6 +199,7 @@ pub struct SyncNode<C: ClipboardBackend> {
     engine: Engine,
     clipboard: C,
     watch: Receiver<ClipboardContent>,
+    paused: bool,
 }
 
 impl<C: ClipboardBackend> SyncNode<C> {
@@ -195,7 +209,14 @@ impl<C: ClipboardBackend> SyncNode<C> {
             engine: Engine::new(node_id_from_public_key(public_key)),
             clipboard,
             watch,
+            paused: false,
         }
+    }
+
+    /// While paused, local changes are discarded (not replayed on resume) and
+    /// remote items are received but not applied.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
     }
 
     pub fn clipboard(&self) -> &C {
@@ -238,17 +259,22 @@ impl<C: ClipboardBackend> SyncNode<C> {
     /// Send all pending local clipboard changes; returns how many items were sent.
     pub fn pump_local(&mut self, session: &mut Session) -> Result<usize, SyncError> {
         let mut sent = 0;
+        if self.paused {
+            while self.watch.try_recv().is_ok() {}
+            return Ok(0);
+        }
         while let Ok(content) = self.watch.try_recv() {
             if let Outgoing::Send(stamp) = self.engine.on_local_change(&content, now_ms()) {
-                let ClipboardContent::Text(t) = &content else {
-                    continue;
+                let (kind, body) = match &content {
+                    ClipboardContent::Text(t) => (TYPE_TEXT, t.as_bytes()),
+                    ClipboardContent::Image(png) => (TYPE_IMAGE, png.as_slice()),
                 };
-                let mut payload = Vec::with_capacity(ITEM_HEADER + t.len());
+                let mut payload = Vec::with_capacity(ITEM_HEADER + body.len());
                 payload.extend_from_slice(&stamp.ts_ms.to_be_bytes());
                 payload.extend_from_slice(&stamp.counter.to_be_bytes());
                 payload.extend_from_slice(&stamp.node);
-                payload.extend_from_slice(t.as_bytes());
-                session.send(TYPE_TEXT, &payload)?;
+                payload.extend_from_slice(body);
+                session.send(kind, &payload)?;
                 sent += 1;
             }
         }
@@ -267,7 +293,7 @@ impl<C: ClipboardBackend> SyncNode<C> {
                     .map_err(|_| SyncError::Malformed)?;
                 self.engine.observe_remote_counter(u64::from_be_bytes(b));
             }
-            TYPE_TEXT => {
+            TYPE_TEXT | TYPE_IMAGE => {
                 if m.payload.len() < ITEM_HEADER {
                     return Err(SyncError::Malformed);
                 }
@@ -277,11 +303,26 @@ impl<C: ClipboardBackend> SyncNode<C> {
                     counter: u64::from_be_bytes(p[8..16].try_into().unwrap()),
                     node: p[16..48].try_into().unwrap(),
                 };
-                let body = String::from_utf8(p[ITEM_HEADER..].to_vec())
-                    .map_err(|_| SyncError::Malformed)?;
-                let content = ClipboardContent::Text(body);
-                if self.engine.on_remote(stamp, &content, now_ms()) == Incoming::Apply {
-                    self.clipboard.write(content)?;
+                let content = if m.content_type == TYPE_IMAGE {
+                    ClipboardContent::Image(p[ITEM_HEADER..].to_vec())
+                } else {
+                    ClipboardContent::Text(
+                        String::from_utf8(p[ITEM_HEADER..].to_vec())
+                            .map_err(|_| SyncError::Malformed)?,
+                    )
+                };
+                if !self.paused
+                    && self.engine.on_remote(stamp, &content, now_ms()) == Incoming::Apply
+                {
+                    let is_image = matches!(content, ClipboardContent::Image(_));
+                    match self.clipboard.write(content) {
+                        Ok(()) => {}
+                        // A failed image conversion is dropped, not fatal.
+                        Err(e) if is_image => self
+                            .engine
+                            .push_event(SyncEvent::ImageDropped(ImageError::Conversion(e.0))),
+                        Err(e) => return Err(e.into()),
+                    }
                 }
             }
             _ => {}
@@ -458,5 +499,71 @@ mod tests {
             panic!()
         };
         assert_eq!(s.counter, 41);
+    }
+
+    fn png_header(w: u32, h: u32) -> Vec<u8> {
+        let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
+        v.extend_from_slice(b"IHDR");
+        v.extend_from_slice(&w.to_be_bytes());
+        v.extend_from_slice(&h.to_be_bytes());
+        v
+    }
+
+    #[test]
+    fn small_image_is_sent_and_applied() {
+        let img = ClipboardContent::Image(png_header(10, 10));
+        let mut a = eng(1);
+        let Outgoing::Send(s) = a.on_local_change(&img, 10_000) else {
+            panic!()
+        };
+        let mut b = eng(2);
+        assert_eq!(b.on_remote(s, &img, 10_001), Incoming::Apply);
+    }
+
+    #[test]
+    fn oversize_local_image_is_dropped_with_event() {
+        let mut e = eng(1);
+        let mut big = png_header(10, 10);
+        big.resize(10 * 1024 * 1024 + 1, 0);
+        assert_eq!(
+            e.on_local_change(&ClipboardContent::Image(big), 10_000),
+            Outgoing::TooLarge
+        );
+        assert!(matches!(
+            e.take_events()[..],
+            [SyncEvent::ImageDropped(ImageError::TooLarge { .. })]
+        ));
+    }
+
+    #[test]
+    fn remote_image_over_64_megapixels_is_rejected_with_event() {
+        let mut e = eng(1);
+        let remote = Stamp {
+            ts_ms: 10_000,
+            counter: 1,
+            node: [2; 32],
+        };
+        let bomb = ClipboardContent::Image(png_header(20_000, 20_000));
+        assert_eq!(e.on_remote(remote, &bomb, 10_000), Incoming::Reject);
+        assert!(matches!(
+            e.take_events()[..],
+            [SyncEvent::ImageDropped(ImageError::TooManyPixels { .. })]
+        ));
+    }
+
+    #[test]
+    fn remote_non_png_image_is_rejected_with_event() {
+        let mut e = eng(1);
+        let remote = Stamp {
+            ts_ms: 10_000,
+            counter: 1,
+            node: [2; 32],
+        };
+        let junk = ClipboardContent::Image(vec![1, 2, 3]);
+        assert_eq!(e.on_remote(remote, &junk, 10_000), Incoming::Reject);
+        assert_eq!(
+            e.take_events(),
+            vec![SyncEvent::ImageDropped(ImageError::NotPng)]
+        );
     }
 }

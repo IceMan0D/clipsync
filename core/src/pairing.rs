@@ -20,7 +20,8 @@ const SAS_INFO: &[u8] = b"Clipsync-SAS";
 pub fn sas_code(handshake_hash: &[u8]) -> u32 {
     let hk = Hkdf::<Sha256>::new(None, handshake_hash);
     let mut out = [0u8; 4];
-    hk.expand(SAS_INFO, &mut out).expect("4 bytes is a valid HKDF length");
+    hk.expand(SAS_INFO, &mut out)
+        .expect("4 bytes is a valid HKDF length");
     u32::from_be_bytes(out) % 1_000_000
 }
 
@@ -176,7 +177,11 @@ impl Node {
     }
 
     /// Like `dial_trusted`, with a TCP connect timeout.
-    pub fn dial_trusted_timeout(&self, addr: &std::net::SocketAddr, timeout: Duration) -> Result<Session> {
+    pub fn dial_trusted_timeout(
+        &self,
+        addr: &std::net::SocketAddr,
+        timeout: Duration,
+    ) -> Result<Session> {
         let session = crate::transport::connect_timeout(addr, self.inner.keypair.clone(), timeout)?;
         if !self.is_pinned(session.remote_static())? {
             return Err(Error::UnknownPeer);

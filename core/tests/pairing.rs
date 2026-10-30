@@ -24,7 +24,11 @@ fn peer() -> Peer {
     let public = kp.public.clone();
     let store = Arc::new(MemoryKeyStore::default());
     let node = Arc::new(Node::new(kp, store.clone()));
-    Peer { node, store, public }
+    Peer {
+        node,
+        store,
+        public,
+    }
 }
 
 fn listener(p: &Peer) -> Listener {
@@ -162,7 +166,11 @@ fn run_pairing_expect_refused(a: &Peer, b: &Peer) -> (bool, bool, (), ()) {
     let addr = l.local_addr();
     let an = a.node.clone();
     let h = thread::spawn(move || an.accept(&l).is_ok());
-    let b_ok = b.node.dial_pairing(addr).and_then(|att| att.confirm(true)).is_ok();
+    let b_ok = b
+        .node
+        .dial_pairing(addr)
+        .and_then(|att| att.confirm(true))
+        .is_ok();
     (h.join().unwrap(), b_ok, (), ())
 }
 
