@@ -28,6 +28,10 @@
   <h3>Paired devices</h3>
   <div id="devices"></div>
 </section>
+<section id="startup">
+  <label><input type="checkbox" id="autostart"> Start ClipSync at login</label>
+  <div id="autostart-error" class="err"></div>
+</section>
 <div id="error" class="err"></div>
 
 <script>
@@ -159,6 +163,16 @@
   async function poll() {
     try { render(await invoke("get_state")); } catch (e) { $("error").textContent = String(e); }
   }
+  const autostart = $("autostart");
+  invoke("get_autostart").then(v => { autostart.checked = v; }).catch(e => { $("autostart-error").textContent = String(e); });
+  autostart.addEventListener("change", async () => {
+    const enabled = autostart.checked;
+    autostart.disabled = true;
+    $("autostart-error").textContent = "";
+    try { await invoke("set_autostart", { enabled }); }
+    catch (e) { $("autostart-error").textContent = String(e); autostart.checked = !enabled; }
+    finally { autostart.disabled = false; }
+  });
   poll();
   setInterval(poll, 700);
 </script>

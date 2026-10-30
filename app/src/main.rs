@@ -24,6 +24,10 @@ fn book_path() -> std::path::PathBuf {
     base.join("clipsync").join("addresses.txt")
 }
 
+fn settings_path() -> std::path::PathBuf {
+    book_path().with_file_name("settings.txt")
+}
+
 fn load_book(primary: Option<Arc<dyn Resolver>>) -> CandidateResolver {
     let book = CandidateResolver::new(primary);
     if let Ok(text) = std::fs::read_to_string(book_path()) {

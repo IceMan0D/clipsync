@@ -3,7 +3,7 @@
 
 use crate::connection::{Backoff, Conn, ConnState, Offer, Registry, Resolver};
 use crate::pairing::{Incoming, Node, PairingAttempt};
-use crate::sync::{node_id_from_public_key, NodeId, SyncNode};
+use crate::sync::{node_id_from_public_key, NodeId, SyncEvent, SyncNode};
 use crate::transport::{Error, Listener, Result, Session};
 use clipsync_clipboard::ClipboardBackend;
 use std::collections::HashSet;
@@ -49,6 +49,7 @@ struct Shared {
     dialers: Mutex<HashSet<Vec<u8>>>,
     /// Receives unpinned peers that connect during a pairing window.
     pairing_handler: Mutex<Option<PairingHandler>>,
+    events: Mutex<Vec<SyncEvent>>,
 }
 
 /// Called with each incoming pairing attempt; must not block.
@@ -144,6 +145,7 @@ impl Daemon {
             auto_dial: cfg.auto_dial,
             dialers: Mutex::new(HashSet::new()),
             pairing_handler: Mutex::new(None),
+            events: Mutex::new(Vec::new()),
         });
         let local_addr = cfg.listener.local_addr();
         let mut threads = Vec::new();
@@ -197,6 +199,11 @@ impl Daemon {
     /// loop notices the missing key and stops.
     pub fn remove_peer(&self, peer_key: &[u8]) -> Result<()> {
         self.shared.node.remove_device(peer_key)
+    }
+
+    /// Drain sync events (oversize or dropped items) raised since the last call.
+    pub fn take_events(&self) -> Vec<SyncEvent> {
+        std::mem::take(&mut *self.shared.events.lock().unwrap())
     }
 
     /// Pause or resume clipboard sync. Connections stay up; nothing is sent or applied while paused.
@@ -304,6 +311,10 @@ fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receive
     let mut active: Vec<Active> = Vec::new();
     while !s.stopped() {
         node.set_paused(s.paused.load(Ordering::SeqCst));
+        let evs = node.take_events();
+        if !evs.is_empty() {
+            s.events.lock().unwrap().extend(evs);
+        }
         loop {
             let h = if active.is_empty() {
                 match rx.recv_timeout(Duration::from_millis(50)) {
