@@ -175,6 +175,16 @@ impl Node {
         Ok(session)
     }
 
+    /// Like `dial_trusted`, with a TCP connect timeout.
+    pub fn dial_trusted_timeout(&self, addr: &std::net::SocketAddr, timeout: Duration) -> Result<Session> {
+        let session = crate::transport::connect_timeout(addr, self.inner.keypair.clone(), timeout)?;
+        if !self.is_pinned(session.remote_static())? {
+            return Err(Error::UnknownPeer);
+        }
+        self.register(&session)?;
+        Ok(session)
+    }
+
     /// Connect to a peer to pair with it. Requires this node's own pairing window to be open.
     pub fn dial_pairing(&self, addr: impl ToSocketAddrs) -> Result<PairingAttempt> {
         let deadline = self.open_deadline().ok_or(Error::PairingClosed)?;

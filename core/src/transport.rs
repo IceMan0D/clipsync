@@ -133,7 +133,15 @@ impl Listener {
 }
 
 pub fn connect(addr: impl ToSocketAddrs, keypair: Keypair) -> Result<Session> {
-    let mut stream = TcpStream::connect(addr)?;
+    connect_stream(TcpStream::connect(addr)?, keypair)
+}
+
+/// Like `connect`, but gives up on the TCP connect after `timeout`.
+pub fn connect_timeout(addr: &SocketAddr, keypair: Keypair, timeout: Duration) -> Result<Session> {
+    connect_stream(TcpStream::connect_timeout(addr, timeout)?, keypair)
+}
+
+fn connect_stream(mut stream: TcpStream, keypair: Keypair) -> Result<Session> {
     stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     let mut hs = builder(&keypair)?.build_initiator()?;
     let mut buf = vec![0u8; MAX_FRAME];
@@ -216,6 +224,20 @@ impl Session {
     /// A handle to the underlying socket, used to terminate the session from elsewhere.
     pub(crate) fn socket_handle(&self) -> io::Result<TcpStream> {
         self.stream.try_clone()
+    }
+
+    /// Wait up to `timeout` for incoming data without consuming it. Returns true if data
+    /// (or EOF) is pending, so a following `recv` will not block on an idle link.
+    pub(crate) fn wait_readable(&self, timeout: Duration) -> io::Result<bool> {
+        self.stream.set_read_timeout(Some(timeout))?;
+        let mut b = [0u8; 1];
+        match self.stream.peek(&mut b) {
+            Ok(_) => Ok(true),
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub(crate) fn set_read_timeout(&self, d: Option<Duration>) -> io::Result<()> {

@@ -11,6 +11,8 @@ clipsync-clipboard = { version = "0.1.0", path = "../clipboard" }
 sha2 = "0.11.1"
 snow = "0.10.0"
 thiserror = "2.0.21"
+mdns-sd = "0.21.6"
+if-addrs = "0.15.0"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }

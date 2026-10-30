@@ -1,6 +1,10 @@
 // Stub for the Tauri shell; the real UI arrives in a later ticket.
 // For now: a CLI for SAS pairing and device management.
+use clipsync_clipboard::NativeClipboard;
+use clipsync_core::daemon::{Daemon, DaemonConfig, DEFAULT_PORT as PORT};
+use clipsync_core::discovery::{announce_addrs, system_interfaces, Discovery};
 use clipsync_core::keystore::KeychainStore;
+use clipsync_core::sync::node_id_from_public_key;
 use clipsync_core::pairing::{Incoming, Node, PairingAttempt};
 use clipsync_core::transport::Listener;
 use std::io::{self, BufRead, Write};
@@ -46,6 +50,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             att.confirm(ok)?;
             println!("Paired.");
         }
+        ["run"] | ["run", _] => {
+            let port: u16 = match args.get(1) {
+                Some(p) => p.parse()?,
+                None => PORT,
+            };
+            let listener = Listener::bind(("0.0.0.0", port), node.keypair().clone(), vec![])?;
+            let addrs = announce_addrs(&system_interfaces());
+            let id = node_id_from_public_key(&node.keypair().public);
+            let discovery = Arc::new(Discovery::start(id, port, &addrs)?);
+            println!("Listening on port {port}; announcing on {addrs:?}");
+            let paired = node.paired_devices()?.len();
+            if paired == 0 {
+                println!("No paired devices yet: run `clipsync pair-listen` on one machine and `pair-connect` on the other.");
+            }
+            let _daemon = Daemon::start(
+                DaemonConfig { node, listener, resolver: discovery.clone(), auto_dial: true },
+                NativeClipboard::new,
+            );
+            println!("Syncing with {paired} paired device(s). Ctrl-C to quit.");
+            loop {
+                std::thread::park();
+            }
+        }
         ["devices"] => {
             for key in node.paired_devices()? {
                 println!("{}", hex::encode(key));
@@ -55,7 +82,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             node.remove_device(&hex::decode(key)?)?;
             println!("Removed.");
         }
-        _ => eprintln!("usage: clipsync pair-listen [addr] | pair-connect <addr> | devices | remove <hex-key>"),
+        _ => eprintln!("usage: clipsync run [port] | pair-listen [addr] | pair-connect <addr> | devices | remove <hex-key>"),
     }
     Ok(())
 }
