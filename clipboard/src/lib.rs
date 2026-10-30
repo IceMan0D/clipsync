@@ -3,8 +3,26 @@
 use std::fmt;
 use std::sync::mpsc::Receiver;
 
+pub mod conceal;
 mod mock;
+mod retry;
 pub use mock::MockClipboard;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::MacClipboard;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::WindowsClipboard;
+
+/// The native clipboard backend for the current OS.
+#[cfg(target_os = "macos")]
+pub type NativeClipboard = MacClipboard;
+#[cfg(windows)]
+pub type NativeClipboard = WindowsClipboard;
 
 /// Content carried on the clipboard.
 #[derive(Debug, Clone, PartialEq, Eq)]

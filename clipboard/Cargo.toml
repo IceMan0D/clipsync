@@ -3,3 +3,16 @@ name = "clipsync-clipboard"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_UI_WindowsAndMessaging",
+] }
