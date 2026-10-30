@@ -58,7 +58,7 @@ fn start_daemon() -> Result<(Daemon, Node), Box<dyn std::error::Error>> {
     let id = node_id_from_public_key(&node.keypair().public);
     let discovery = Arc::new(Discovery::start(id, DEFAULT_PORT, &addrs)?);
     let daemon = Daemon::start(
-        DaemonConfig { node, listener, resolver: discovery, auto_dial: true },
+        DaemonConfig { node, listener, resolver: Arc::new(super::load_book(Some(discovery))), auto_dial: true },
         NativeClipboard::new,
     );
     Ok((daemon, Node::new(identity, store)))
