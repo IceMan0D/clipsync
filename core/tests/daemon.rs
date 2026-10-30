@@ -212,3 +212,89 @@ fn unpaired_peer_never_connects() {
 fn a_pub(a: &Side) -> Keypair {
     Keypair::from_parts(a.public.clone(), vec![0; 32])
 }
+
+#[test]
+fn idle_connection_stays_up_past_the_dead_peer_timeout_thanks_to_heartbeats() {
+    let (mut a, mut b) = two_sides();
+    a.start(true);
+    b.start(true);
+    assert!(wait_until(Duration::from_secs(5), || {
+        a.d().peer_state(&b.public) == ConnState::Connected
+            && b.d().peer_state(&a.public) == ConnState::Connected
+    }));
+    let before = a.d().connections_established() + b.d().connections_established();
+    thread::sleep(Duration::from_secs(7));
+    assert_eq!(a.d().peer_state(&b.public), ConnState::Connected);
+    assert_eq!(b.d().peer_state(&a.public), ConnState::Connected);
+    assert_eq!(
+        a.d().connections_established() + b.d().connections_established(),
+        before,
+        "no reconnects while idle"
+    );
+}
+
+#[test]
+fn silent_peer_is_declared_dead_within_five_seconds() {
+    let (ka, kb) = (Keypair::generate(), Keypair::generate());
+    let mut a = side(&[&kb], ka.clone());
+    a.start(false);
+    // A paired peer that completes the handshake and then says nothing (e.g. suspended).
+    let peer = Node::new(kb.clone(), {
+        let s = Arc::new(MemoryKeyStore::default());
+        s.add(&ka.public).unwrap();
+        s
+    });
+    let mut session = peer
+        .dial_trusted_timeout(&a.addr, Duration::from_secs(3))
+        .unwrap();
+    session.send(0, &0u64.to_be_bytes()).unwrap(); // hello
+    let b_pub = kb.public.clone();
+    assert!(wait_until(Duration::from_secs(2), || {
+        a.d().peer_state(&b_pub) == ConnState::Connected
+    }));
+    let t = Instant::now();
+    assert!(wait_until(Duration::from_secs(6), || {
+        a.d().peer_state(&b_pub) == ConnState::Disconnected
+    }));
+    let elapsed = t.elapsed();
+    assert!(elapsed >= Duration::from_secs(4), "too eager: {elapsed:?}");
+    assert!(elapsed <= Duration::from_millis(5600), "too slow: {elapsed:?}");
+}
+
+#[test]
+fn network_change_forces_immediate_reconnect_and_drops_items_copied_while_down() {
+    let (mut a, mut b) = two_sides();
+    a.start(true);
+    b.start(false);
+    assert!(wait_until(Duration::from_secs(5), || {
+        a.d().peer_state(&b.public) == ConnState::Connected
+            && b.d().peer_state(&a.public) == ConnState::Connected
+    }));
+
+    // The network goes away: a cannot find b, and tears down on the change notification.
+    a.resolver.set(b.id, vec![]);
+    a.d().network_changed();
+    assert!(wait_until(Duration::from_secs(2), || {
+        a.d().peer_state(&b.public) == ConnState::Disconnected
+            && b.d().peer_state(&a.public) == ConnState::Disconnected
+    }));
+    // let a's backoff grow so only the notification can make the next dial prompt
+    thread::sleep(Duration::from_millis(3500));
+    a.copy("while offline");
+
+    // The network returns.
+    a.resolver.set(b.id, vec![b.addr]);
+    let t = Instant::now();
+    a.d().network_changed();
+    assert!(wait_until(Duration::from_secs(3), || {
+        a.d().peer_state(&b.public) == ConnState::Connected
+            && b.d().peer_state(&a.public) == ConnState::Connected
+    }));
+    assert!(t.elapsed() < Duration::from_secs(3));
+
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(b.pasted(), None, "offline copy must not be delivered");
+    a.copy("after reconnect");
+    assert!(wait_until(Duration::from_secs(1), || b.pasted()
+        == Some(ClipboardContent::Text("after reconnect".into()))));
+}

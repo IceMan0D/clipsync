@@ -7,11 +7,11 @@ use crate::sync::{node_id_from_public_key, NodeId, SyncNode};
 use crate::transport::{Error, Listener, Result, Session};
 use clipsync_clipboard::ClipboardBackend;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Default TCP listening port.
 pub const DEFAULT_PORT: u16 = 43872;
@@ -19,6 +19,11 @@ pub const DEFAULT_PORT: u16 = 43872;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
+/// Application-level heartbeat period.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+/// A peer silent for this long is declared dead.
+pub const DEAD_AFTER: Duration = Duration::from_secs(5);
+const ACCEPTORS: usize = 4;
 const POLL: Duration = Duration::from_millis(10);
 
 pub struct DaemonConfig {
@@ -42,6 +47,9 @@ struct Shared {
     registry: Registry,
     to_sync: Mutex<Sender<Handoff>>,
     stop: AtomicBool,
+    /// Bumped by `network_changed`; dial loops wake and drop their backoff when it moves.
+    kick: AtomicU64,
+    established: AtomicU64,
 }
 
 pub struct Daemon {
@@ -65,6 +73,19 @@ impl Shared {
             thread::sleep(Duration::from_millis(50).min(d));
         }
         self.stopped()
+    }
+
+    /// Like `sleep`, but also returns early (true) when `network_changed` was called
+    /// since the kick generation `seen`.
+    fn sleep_unless_kicked(&self, d: Duration, seen: u64) -> bool {
+        let end = Instant::now() + d;
+        while Instant::now() < end {
+            if self.stopped() || self.kick.load(Ordering::SeqCst) != seen {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        self.stopped() || self.kick.load(Ordering::SeqCst) != seen
     }
 
     fn offer(&self, session: Session, dialed: bool) {
@@ -119,6 +140,8 @@ impl Daemon {
             registry: Registry::new(),
             to_sync: Mutex::new(tx),
             stop: AtomicBool::new(false),
+            kick: AtomicU64::new(0),
+            established: AtomicU64::new(0),
         });
         let local_addr = cfg.listener.local_addr();
         let mut threads = Vec::new();
@@ -128,9 +151,13 @@ impl Daemon {
             sync_loop(&s, SyncNode::new(make_clipboard(), &public), rx)
         }));
 
-        let s = shared.clone();
-        let listener = cfg.listener;
-        threads.push(thread::spawn(move || accept_loop(&s, listener)));
+        // Several acceptors: a stalled half-open connection must not block the others
+        // (a handshake can take up to 5 s to time out).
+        let listener = Arc::new(cfg.listener);
+        for _ in 0..ACCEPTORS {
+            let (s, l) = (shared.clone(), listener.clone());
+            threads.push(thread::spawn(move || accept_loop(&s, &l)));
+        }
 
         if cfg.auto_dial {
             let keys = shared.node.paired_devices().unwrap_or_default();
@@ -160,6 +187,18 @@ impl Daemon {
         self.shared.registry.dialed(&node_id_from_public_key(peer_key))
     }
 
+    /// Total number of connections that completed the handshake since start.
+    pub fn connections_established(&self) -> u64 {
+        self.shared.established.load(Ordering::SeqCst)
+    }
+
+    /// The OS reported sleep/wake or a network change: tear down every connection now
+    /// and make the dial loops re-probe immediately, skipping any backoff delay.
+    pub fn network_changed(&self) {
+        self.shared.kick.fetch_add(1, Ordering::SeqCst);
+        self.shared.registry.reset();
+    }
+
     /// Make a single dial attempt right now.
     pub fn dial_now(&self, peer_key: &[u8]) -> Result<()> {
         self.shared.dial_once(peer_key)
@@ -168,17 +207,19 @@ impl Daemon {
     pub fn shutdown(mut self) {
         self.shared.stop.store(true, Ordering::SeqCst);
         self.shared.registry.close_all();
-        // wake the blocking accept
-        let _ = std::net::TcpStream::connect_timeout(&self.local_addr, Duration::from_millis(500));
+        // wake the blocking accepts
+        for _ in 0..ACCEPTORS {
+            let _ = std::net::TcpStream::connect_timeout(&self.local_addr, Duration::from_millis(500));
+        }
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
     }
 }
 
-fn accept_loop(s: &Shared, listener: Listener) {
+fn accept_loop(s: &Shared, listener: &Listener) {
     while !s.stopped() {
-        match s.node.accept(&listener) {
+        match s.node.accept(listener) {
             Ok(Incoming::Trusted(session)) => s.offer(session, false),
             // Pairing is driven explicitly from the CLI, not by the daemon.
             Ok(Incoming::Pairing(_)) => {}
@@ -193,7 +234,13 @@ fn accept_loop(s: &Shared, listener: Listener) {
 fn dial_loop(s: &Shared, peer_key: Vec<u8>) {
     let peer = node_id_from_public_key(&peer_key);
     let mut backoff = Backoff::new();
+    let mut seen = s.kick.load(Ordering::SeqCst);
     while !s.stopped() {
+        let now = s.kick.load(Ordering::SeqCst);
+        if now != seen {
+            seen = now;
+            backoff.reset();
+        }
         if !s.node.paired_devices().is_ok_and(|d| d.contains(&peer_key)) {
             return; // unpaired
         }
@@ -208,7 +255,7 @@ fn dial_loop(s: &Shared, peer_key: Vec<u8>) {
                 s.sleep(Duration::from_millis(100));
             }
             Err(_) => {
-                s.sleep(backoff.next_delay());
+                s.sleep_unless_kicked(backoff.next_delay(), seen);
             }
         }
     }
@@ -218,6 +265,8 @@ struct Active {
     session: Session,
     peer: NodeId,
     token: u64,
+    last_heard: Instant,
+    last_ping: Instant,
 }
 
 fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receiver<Handoff>) {
@@ -241,7 +290,15 @@ fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receive
             if node.handshake(&mut session).is_ok() {
                 let _ = session.set_read_timeout(None);
                 s.registry.mark_connected(&h.peer, h.token);
-                active.push(Active { session, peer: h.peer, token: h.token });
+                s.established.fetch_add(1, Ordering::SeqCst);
+                let now = Instant::now();
+                active.push(Active {
+                    session,
+                    peer: h.peer,
+                    token: h.token,
+                    last_heard: now,
+                    last_ping: now,
+                });
             } else {
                 s.registry.release(&h.peer, h.token);
             }
@@ -250,12 +307,23 @@ fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receive
         let mut i = 0;
         while i < active.len() {
             let a = &mut active[i];
-            let ok = node.pump_local(&mut a.session).is_ok()
+            if a.last_ping.elapsed() >= HEARTBEAT_INTERVAL {
+                a.last_ping = Instant::now();
+                if node.ping(&mut a.session).is_err() {
+                    let dead = active.swap_remove(i);
+                    s.registry.release(&dead.peer, dead.token);
+                    continue;
+                }
+            }
+            let ok = a.last_heard.elapsed() < DEAD_AFTER
+                && node.pump_local(&mut a.session).is_ok()
                 && match a.session.wait_readable(POLL) {
                     Ok(false) => true,
                     Ok(true) => {
                         let _ = a.session.set_read_timeout(Some(RECV_TIMEOUT));
-                        node.recv_one(&mut a.session).is_ok()
+                        let r = node.recv_one(&mut a.session).is_ok();
+                        a.last_heard = Instant::now();
+                        r
                     }
                     Err(_) => false,
                 };

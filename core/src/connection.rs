@@ -173,6 +173,15 @@ impl Registry {
         self.inner.lock().unwrap().slots.get(peer).map(|s| s.conn.dialed)
     }
 
+    /// Close every connection and forget it, so the peers can be re-dialed immediately.
+    pub fn reset(&self) {
+        let mut g = self.inner.lock().unwrap();
+        for s in g.slots.values() {
+            let _ = s.handle.shutdown(Shutdown::Both);
+        }
+        g.slots.clear();
+    }
+
     pub fn close_all(&self) {
         for s in self.inner.lock().unwrap().slots.values() {
             let _ = s.handle.shutdown(Shutdown::Both);
