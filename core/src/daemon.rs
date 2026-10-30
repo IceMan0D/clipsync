@@ -2,10 +2,11 @@
 //! reconnects with backoff, and drives the sync engine over the live sessions.
 
 use crate::connection::{Backoff, Conn, ConnState, Offer, Registry, Resolver};
-use crate::pairing::{Incoming, Node};
+use crate::pairing::{Incoming, Node, PairingAttempt};
 use crate::sync::{node_id_from_public_key, NodeId, SyncNode};
 use crate::transport::{Error, Listener, Result, Session};
 use clipsync_clipboard::ClipboardBackend;
+use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -43,12 +44,20 @@ struct Shared {
     to_sync: Mutex<Sender<Handoff>>,
     stop: AtomicBool,
     paused: AtomicBool,
+    auto_dial: bool,
+    /// Peers that have a running dial loop.
+    dialers: Mutex<HashSet<Vec<u8>>>,
+    /// Receives unpinned peers that connect during a pairing window.
+    pairing_handler: Mutex<Option<PairingHandler>>,
 }
+
+/// Called with each incoming pairing attempt; must not block.
+pub type PairingHandler = Box<dyn Fn(PairingAttempt) + Send + Sync>;
 
 pub struct Daemon {
     shared: Arc<Shared>,
     local_addr: std::net::SocketAddr,
-    threads: Vec<JoinHandle<()>>,
+    threads: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Shared {
@@ -132,6 +141,9 @@ impl Daemon {
             to_sync: Mutex::new(tx),
             stop: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            auto_dial: cfg.auto_dial,
+            dialers: Mutex::new(HashSet::new()),
+            pairing_handler: Mutex::new(None),
         });
         let local_addr = cfg.listener.local_addr();
         let mut threads = Vec::new();
@@ -145,18 +157,46 @@ impl Daemon {
         let listener = cfg.listener;
         threads.push(thread::spawn(move || accept_loop(&s, listener)));
 
-        if cfg.auto_dial {
-            let keys = shared.node.paired_devices().unwrap_or_default();
-            for key in keys {
-                let s = shared.clone();
-                threads.push(thread::spawn(move || dial_loop(&s, key)));
-            }
-        }
-        Daemon {
+        let daemon = Daemon {
             shared,
             local_addr,
-            threads,
+            threads: Arc::new(Mutex::new(threads)),
+        };
+        for key in daemon.shared.node.paired_devices().unwrap_or_default() {
+            daemon.add_peer(&key);
         }
+        daemon
+    }
+
+    /// The daemon's node: use it (not a copy with a separate identity) to drive pairing.
+    pub fn node(&self) -> &Node {
+        &self.shared.node
+    }
+
+    /// Route unpinned peers that connect while a pairing window is open to `handler`.
+    pub fn set_pairing_handler(&self, handler: PairingHandler) {
+        *self.shared.pairing_handler.lock().unwrap() = Some(handler);
+    }
+
+    /// Start dialing a device that was paired after startup (no-op if already dialed
+    /// or when auto-dial is off).
+    pub fn add_peer(&self, peer_key: &[u8]) {
+        if !self.shared.auto_dial || !self.shared.dialers.lock().unwrap().insert(peer_key.to_vec())
+        {
+            return;
+        }
+        let s = self.shared.clone();
+        let key = peer_key.to_vec();
+        self.threads
+            .lock()
+            .unwrap()
+            .push(thread::spawn(move || dial_loop(&s, key)));
+    }
+
+    /// Unpair a device: delete its pinned key and drop its live connection. Its dial
+    /// loop notices the missing key and stops.
+    pub fn remove_peer(&self, peer_key: &[u8]) -> Result<()> {
+        self.shared.node.remove_device(peer_key)
     }
 
     /// Pause or resume clipboard sync. Connections stay up; nothing is sent or applied while paused.
@@ -195,12 +235,13 @@ impl Daemon {
         self.shared.dial_once(peer_key)
     }
 
-    pub fn shutdown(mut self) {
+    pub fn shutdown(self) {
         self.shared.stop.store(true, Ordering::SeqCst);
         self.shared.registry.close_all();
         // wake the blocking accept
         let _ = std::net::TcpStream::connect_timeout(&self.local_addr, Duration::from_millis(500));
-        for t in self.threads.drain(..) {
+        let threads: Vec<_> = self.threads.lock().unwrap().drain(..).collect();
+        for t in threads {
             let _ = t.join();
         }
     }
@@ -210,8 +251,11 @@ fn accept_loop(s: &Shared, listener: Listener) {
     while !s.stopped() {
         match s.node.accept(&listener) {
             Ok(Incoming::Trusted(session)) => s.offer(session, false),
-            // Pairing is driven explicitly from the CLI, not by the daemon.
-            Ok(Incoming::Pairing(_)) => {}
+            Ok(Incoming::Pairing(att)) => {
+                if let Some(h) = s.pairing_handler.lock().unwrap().as_ref() {
+                    h(att);
+                }
+            }
             Err(Error::Io(_)) => {
                 s.sleep(Duration::from_millis(50));
             }
@@ -225,7 +269,13 @@ fn dial_loop(s: &Shared, peer_key: Vec<u8>) {
     let mut backoff = Backoff::new();
     while !s.stopped() {
         if !s.node.paired_devices().is_ok_and(|d| d.contains(&peer_key)) {
-            return; // unpaired
+            // Unpaired. Re-check under the lock so a concurrent re-pair is not lost.
+            let mut dialers = s.dialers.lock().unwrap();
+            if !s.node.paired_devices().is_ok_and(|d| d.contains(&peer_key)) {
+                dialers.remove(&peer_key);
+                return;
+            }
+            continue;
         }
         if s.registry.state(&peer) != ConnState::Disconnected {
             s.sleep(Duration::from_millis(100));

@@ -1,8 +1,166 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>ClipSync Settings</title></head>
-  <body style="font-family: system-ui; padding: 24px">
-    <h2>ClipSync Settings</h2>
-    <p>Settings arrive in a later release.</p>
-  </body>
+<head>
+<meta charset="utf-8">
+<title>ClipSync Settings</title>
+<style>
+  body { font-family: system-ui; padding: 20px; color: #222; }
+  h2, h3 { margin: 0 0 8px; }
+  section { margin-bottom: 24px; }
+  .sas { font-size: 40px; letter-spacing: 8px; font-variant-numeric: tabular-nums; margin: 12px 0; }
+  .err { color: #b00020; }
+  .dev { border: 1px solid #ccc; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+  .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .muted { color: #666; font-size: 12px; }
+  input { flex: 1; padding: 4px; }
+  @media (prefers-color-scheme: dark) { body { background: #1e1e1e; color: #ddd; } .dev { border-color: #555; } .muted { color: #999; } }
+</style>
+</head>
+<body>
+<h2>ClipSync</h2>
+
+<section>
+  <h3>Pair new device</h3>
+  <div id="pairing"></div>
+</section>
+
+<section>
+  <h3>Paired devices</h3>
+  <div id="devices"></div>
+</section>
+<div id="error" class="err"></div>
+
+<script>
+  // Thin view: every action calls a Rust command and renders the returned state.
+  const invoke = window.__TAURI__.core.invoke;
+  const $ = (id) => document.getElementById(id);
+  let busy = false;
+  let lastKey = "";
+
+  async function call(cmd, args) {
+    $("error").textContent = "";
+    try { render(await invoke(cmd, args)); }
+    catch (e) { $("error").textContent = String(e); }
+  }
+
+  function button(label, onclick) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = onclick;
+    return b;
+  }
+  function el(tag, text, cls) {
+    const e = document.createElement(tag);
+    if (text) e.textContent = text;
+    if (cls) e.className = cls;
+    return e;
+  }
+
+  function renderPairing(p) {
+    const box = $("pairing");
+    const key = JSON.stringify(p);
+    // Do not clobber the address field while the user is typing.
+    if (p.phase === "idle" || p.phase === "expired" || p.phase === "locked" || p.phase === "paired") {
+      if (box.dataset.phase === p.phase && box.dataset.msg === (p.message || "")) return;
+    }
+    box.dataset.phase = p.phase;
+    box.dataset.msg = p.message || "";
+    box.replaceChildren();
+    const failures = p.failed_attempts > 0 ? ` (failed attempts: ${p.failed_attempts} of ${p.max_failed_attempts})` : "";
+    switch (p.phase) {
+      case "searching":
+      case "failed": {
+        if (p.message) box.append(el("p", p.message + failures, "err"));
+        box.append(el("p", `Open Settings on the other device and click "Pair New Device" too. Looking for it... ${p.seconds_left ?? 0}s left`));
+        box.append(button("Cancel", () => call("pair_cancel")));
+        break;
+      }
+      case "confirm":
+        box.append(el("p", "Does the other device show this code?"));
+        box.append(el("div", p.sas, "sas"));
+        const r = el("div", null, "row");
+        r.append(button("Codes match", () => call("pair_answer", { confirmed: true })));
+        r.append(button("Codes differ", () => call("pair_answer", { confirmed: false })));
+        box.append(r);
+        box.append(el("p", `${p.seconds_left ?? 0}s left` + failures, "muted"));
+        break;
+      case "waiting":
+        box.append(el("div", p.sas, "sas"));
+        box.append(el("p", "Waiting for the other device to confirm..."));
+        break;
+      case "paired":
+        box.append(el("p", "Device paired."));
+        box.append(button("Done", () => call("pair_cancel")));
+        break;
+      case "locked":
+      case "expired": {
+        box.append(el("p", p.message, "err"));
+        box.append(startForm());
+        break;
+      }
+      default:
+        box.append(startForm());
+    }
+  }
+
+  function startForm() {
+    const f = el("div");
+    f.append(button("Pair New Device", () => call("pair_start", { address: addr.value || null })));
+    const addr = document.createElement("input");
+    addr.placeholder = "Optional: address of other device (Tailscale IP / MagicDNS[:port])";
+    const row = el("div", null, "row");
+    row.append(addr);
+    f.append(row);
+    // Re-bind the button now that addr exists.
+    f.firstChild.onclick = () => call("pair_start", { address: addr.value || null });
+    return f;
+  }
+
+  function renderDevices(devs) {
+    const key = JSON.stringify(devs);
+    if (key === lastKey) return;
+    // Keep in-progress typing: skip re-render while an address input is focused.
+    if (document.activeElement && document.activeElement.closest("#devices") && document.activeElement.tagName === "INPUT") return;
+    lastKey = key;
+    const box = $("devices");
+    box.replaceChildren();
+    if (!devs.length) box.append(el("p", "No paired devices.", "muted"));
+    for (const d of devs) {
+      const c = el("div", null, "dev");
+      c.append(el("b", d.name), el("span", " - " + d.status));
+      for (const a of d.addresses) c.append(el("div", a, "muted"));
+      const row = el("div", null, "row");
+      const input = document.createElement("input");
+      input.placeholder = "Add address (IP or MagicDNS name[:port])";
+      row.append(input, button("Add", () => call("add_address", { key: d.key, address: input.value })));
+      c.append(row);
+      const rm = el("div", null, "row");
+      let armed = false;
+      const rmBtn = button("Remove", () => {
+        if (!armed) {
+          armed = true;
+          rmBtn.textContent = "Click again to remove and disconnect";
+          setTimeout(() => { armed = false; rmBtn.textContent = "Remove"; }, 4000);
+        } else {
+          call("remove_device", { key: d.key });
+        }
+      });
+      rm.append(rmBtn);
+      c.append(rm);
+      box.append(c);
+    }
+  }
+
+  function render(s) {
+    renderPairing(s.pairing);
+    renderDevices(s.devices);
+  }
+
+  async function poll() {
+    try { render(await invoke("get_state")); } catch (e) { $("error").textContent = String(e); }
+  }
+  poll();
+  setInterval(poll, 700);
+</script>
+</body>
 </html>

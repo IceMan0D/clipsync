@@ -5,7 +5,7 @@
   "identifier": "com.iceman0d.clipsync",
   "build": { "frontendDist": "./ui" },
   "app": {
-    "withGlobalTauri": false,
+    "withGlobalTauri": true,
     "windows": [],
     "security": { "csp": null }
   },

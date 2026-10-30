@@ -1,4 +1,5 @@
 // Entry point: tray app by default, plus a CLI for SAS pairing and device management.
+mod live;
 mod tray;
 
 use clipsync_clipboard::NativeClipboard;

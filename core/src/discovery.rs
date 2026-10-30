@@ -160,6 +160,13 @@ impl Discovery {
     }
 }
 
+impl Discovery {
+    /// Every peer currently seen on the LAN with its addresses (paired or not).
+    pub fn discovered(&self) -> Vec<(NodeId, Vec<SocketAddr>)> {
+        self.peers.lock().unwrap().values().cloned().collect()
+    }
+}
+
 impl Resolver for Discovery {
     fn resolve(&self, node: &NodeId) -> Vec<SocketAddr> {
         self.peers
