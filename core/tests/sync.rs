@@ -126,8 +126,8 @@ fn one_mib_text_is_transmitted() {
 #[test]
 fn reconnecting_node_receives_nothing_it_missed() {
     let (ka, kb) = (Keypair::generate(), Keypair::generate());
-    let mut a = SyncNode::new(MockClipboard::new(), &ka.public);
-    let mut b = SyncNode::new(MockClipboard::new(), &kb.public);
+    let a = SyncNode::new(MockClipboard::new(), &ka.public);
+    let b = SyncNode::new(MockClipboard::new(), &kb.public);
     // b copies while no connection exists
     b.clipboard_mut().write(text("missed")).unwrap();
     let (sa, sb) = link(&ka, &kb);
@@ -140,5 +140,4 @@ fn reconnecting_node_receives_nothing_it_missed() {
     assert_eq!(b.pump_local(&mut sb).unwrap(), 1);
     a.recv_one(&mut sa).unwrap();
     assert_eq!(a.clipboard().read().unwrap(), Some(text("live")));
-    let _ = (&mut a, &mut b);
 }
