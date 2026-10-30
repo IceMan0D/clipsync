@@ -18,6 +18,13 @@ Peers find each other with mDNS (`_clipsync._tcp`) and connect over TCP port **4
 connection initiated by the peer with the lower node ID is kept. Reconnects back off from 1 s
 to 30 s and re-resolve the peer's address on every attempt.
 
+### Tailscale and manual addresses
+
+`clipsync add-address <hex-key> <addr>` adds a Tailscale IP, MagicDNS name or other address
+(`address[:port]`, default 43872) to a paired device. Candidates are tried in order: mDNS
+first, then manual entries. See [docs/tailscale.md](docs/tailscale.md) for the two-machine
+test procedure.
+
 ### Windows Defender Firewall
 
 The first time `clipsync` listens on Windows, Defender Firewall asks whether to allow it.
