@@ -22,6 +22,8 @@ attempt (backoff 1 s up to 30 s), so a changed IP is picked up automatically.
 | `laptop:5000`                | short MagicDNS name, port 5000       |
 | `[fd7a:115c::1]:5000`        | IPv6 with port (brackets required)   |
 
+The commands below refer to the built executable (`target/debug/clipsync-app` on macOS, `target\debug\clipsync-app.exe` on Windows); use its full or relative path. Stop the tray app before using the CLI. The Settings UI can also pair and add addresses.
+
 ## Procedure
 
 Machines A and B on **different** networks (e.g. A on home Wi-Fi, B on a phone hotspot).
@@ -33,26 +35,26 @@ Machines A and B on **different** networks (e.g. A on home Wi-Fi, B on a phone h
    the README; the rule must cover the Tailscale network profile, which Windows often
    classes as Public).
 3. Pair. Pairing needs a direct connection, so use the Tailscale address:
-   - A: `clipsync pair-listen`
-   - B: `clipsync pair-connect <A-tailscale-ip-or-name>:43872`
+   - A: `clipsync-app pair-listen`
+   - B: `clipsync-app pair-connect <A-tailscale-ip-or-name>:43872`
    - Compare the 6-digit codes and answer `y` on both.
-4. On each machine, find the other's key with `clipsync devices` and add its address:
-   - B: `clipsync add-address <A-hex-key> <A-tailscale-ip-or-magicdns-name>`
-   - A: `clipsync add-address <B-hex-key> <B-tailscale-ip-or-magicdns-name>`
+4. On each machine, find the other's key with `clipsync-app devices` and add its address:
+   - B: `clipsync-app add-address <A-hex-key> <A-tailscale-ip-or-magicdns-name>`
+   - A: `clipsync-app add-address <B-hex-key> <B-tailscale-ip-or-magicdns-name>`
 
    Addresses are stored in `~/.config/clipsync/addresses.txt` (`%APPDATA%\clipsync\addresses.txt`
    on Windows). Only one side needs an address for sync to work, since either side can dial.
-5. Start `clipsync run` on both. Expected: connected within a few seconds.
+5. Start `clipsync-app run` on both. Expected: connected within a few seconds.
 
 ## Checks
 
 - Copy text on A, paste on B within a second; then the reverse.
 - Fallback: `add-address` a dead address first (e.g. `100.64.255.254`), then the real one.
   The connection still comes up (the dead one times out after 3 s).
-- MagicDNS re-resolve: use a MagicDNS name, stop `clipsync` on B, restart Tailscale on B (it
-  may get a new IP), start `clipsync` again. A reconnects without restarting.
+- MagicDNS re-resolve: use a MagicDNS name, stop `clipsync-app` on B, restart Tailscale on B (it
+  may get a new IP), start `clipsync-app` again. A reconnects without restarting.
 - Bare vs ported: repeat with `<ip>` and `<ip>:43872`; both must work. Run B with
-  `clipsync run 5000` and add `<ip>:5000` on A to verify a non-default port.
+  `clipsync-app run 5000` and add `<ip>:5000` on A to verify a non-default port.
 - Disconnect B from the internet, then reconnect: state returns to Connected via backoff.
 
 Headless coverage of parsing, ordering, de-duplication, re-resolution and fallback lives in
