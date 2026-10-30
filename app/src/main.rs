@@ -100,7 +100,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if paired == 0 {
                 println!("No paired devices yet: run `clipsync pair-listen` on one machine and `pair-connect` on the other.");
             }
-            let _daemon = Daemon::start(
+            let daemon = Daemon::start(
                 DaemonConfig {
                     node,
                     listener,
@@ -109,7 +109,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 NativeClipboard::new,
             );
+            clipsync_core::power::install(daemon.change_hook());
             println!("Syncing with {paired} paired device(s). Ctrl-C to quit.");
+            #[cfg(target_os = "macos")]
+            clipsync_core::power::wake::run_event_loop();
             loop {
                 std::thread::park();
             }

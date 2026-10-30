@@ -174,6 +174,7 @@ impl Engine {
 const TYPE_HELLO: u8 = 0;
 const TYPE_TEXT: u8 = 1;
 const TYPE_IMAGE: u8 = 2;
+const TYPE_PING: u8 = 3;
 /// Item payload: ts_ms(8) counter(8) node(32) body.
 const ITEM_HEADER: usize = 48;
 
@@ -246,6 +247,12 @@ impl<C: ClipboardBackend> SyncNode<C> {
         }
         self.engine
             .observe_remote_counter(u64::from_be_bytes(bytes));
+        Ok(())
+    }
+
+    /// Heartbeat: any received message counts as liveness; pings carry no data.
+    pub fn ping(&mut self, session: &mut Session) -> Result<(), SyncError> {
+        session.send(TYPE_PING, &[])?;
         Ok(())
     }
 

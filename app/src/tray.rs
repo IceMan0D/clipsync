@@ -124,6 +124,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            clipsync_core::power::install(state.daemon.change_hook());
+
             let handle = app.handle().clone();
             let menu = render(&handle, &state)?;
             let st = state.clone();

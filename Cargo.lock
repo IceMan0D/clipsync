@@ -442,15 +442,20 @@ dependencies = [
 name = "clipsync-core"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "clipsync-clipboard",
  "hex",
  "hkdf",
  "if-addrs",
  "keyring",
  "mdns-sd",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "sha2 0.11.1",
  "snow",
  "thiserror 2.0.21",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
