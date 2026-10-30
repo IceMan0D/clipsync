@@ -331,3 +331,58 @@ fn network_change_forces_immediate_reconnect_and_drops_items_copied_while_down()
     assert!(wait_until(Duration::from_secs(1), || b.pasted()
         == Some(ClipboardContent::Text("after reconnect".into()))));
 }
+
+#[test]
+fn removing_a_peer_disconnects_it_and_it_is_not_redialed() {
+    let (mut a, mut b) = two_sides();
+    a.start(true);
+    b.start(true);
+    assert!(wait_until(Duration::from_secs(5), || {
+        a.d().peer_state(&b.public) == ConnState::Connected
+            && b.d().peer_state(&a.public) == ConnState::Connected
+    }));
+
+    a.d().remove_peer(&b.public).unwrap();
+    assert!(a.d().node().paired_devices().unwrap().is_empty());
+    assert!(wait_until(Duration::from_secs(3), || {
+        a.d().peer_state(&b.public) == ConnState::Disconnected
+    }));
+    // b keeps dialing but a no longer trusts it; a does not dial b either
+    thread::sleep(Duration::from_millis(2500));
+    assert_eq!(a.d().peer_state(&b.public), ConnState::Disconnected);
+    a.copy("secret");
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(b.pasted(), None);
+}
+
+#[test]
+fn a_device_paired_while_running_is_dialed_without_restart() {
+    let (ka, kb) = (Keypair::generate(), Keypair::generate());
+    let (mut a, mut b) = (side(&[], ka), side(&[], kb));
+    a.resolver.set(b.id, vec![b.addr]);
+    b.resolver.set(a.id, vec![a.addr]);
+    a.start(true);
+    b.start(true);
+
+    // a's daemon hands incoming pairing attempts to the handler
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tx = Mutex::new(tx);
+    a.d().set_pairing_handler(Box::new(move |att| {
+        tx.lock().unwrap().send(att).unwrap();
+    }));
+    a.d().node().start_pairing();
+    b.d().node().start_pairing();
+    let att_b = b.d().node().dial_pairing(a.addr).unwrap();
+    let att_a = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert_eq!(att_a.sas(), att_b.sas());
+    let h = thread::spawn(move || att_a.confirm(true).is_ok());
+    assert!(att_b.confirm(true).is_ok());
+    assert!(h.join().unwrap());
+
+    a.d().add_peer(&b.public);
+    b.d().add_peer(&a.public);
+    assert!(wait_until(Duration::from_secs(5), || {
+        a.d().peer_state(&b.public) == ConnState::Connected
+            && b.d().peer_state(&a.public) == ConnState::Connected
+    }));
+}

@@ -151,6 +151,8 @@ fn three_failed_attempts_lock_the_pairing_session() {
         assert!(!a_ok);
     }
     assert!(a.node.pairing_locked());
+    let status = a.node.pairing_status();
+    assert!(status.locked && status.failed == 3 && status.open_for.is_none());
     // A fourth attempt, even with matching confirmations, is refused.
     b.node.start_pairing();
     let (a_ok, b_ok, _, _) = run_pairing_expect_refused(&a, &b);

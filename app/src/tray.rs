@@ -1,6 +1,9 @@
-//! Thin Tauri shell: runs the sync daemon in the background and renders `model` as a tray menu.
+//! Thin Tauri shell: runs the sync daemon in the background, renders `model` as a tray menu
+//! and exposes the `commands::Controller` to the settings webview.
 
+use crate::live::Live;
 use clipsync_app::autostart::{self, Settings};
+use clipsync_app::commands::{Backend, Controller, StateView};
 use clipsync_app::notice::Notices;
 use clipsync_app::model::{build_menu, tooltip, Device, MenuItem as Item, PauseState, ID_PAUSE, ID_QUIT, ID_SETTINGS};
 use clipsync_clipboard::NativeClipboard;
@@ -16,24 +19,50 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
+type Ctl = Arc<Controller<Live>>;
 const ID_DISMISS_NOTICES: &str = "dismiss_notices";
 
 struct State {
-    daemon: Daemon,
-    node: Node,
+    daemon: Arc<Daemon>,
+    controller: Ctl,
     pause: Mutex<PauseState>,
     notices: Mutex<Notices>,
 }
 
 impl State {
     fn devices(&self) -> Vec<Device> {
-        self.node
-            .paired_devices()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|key| Device { status: self.daemon.peer_state(&key).into(), key })
-            .collect()
+        self.controller.backend().paired()
     }
+}
+
+#[tauri::command]
+fn get_state(c: tauri::State<Ctl>) -> StateView {
+    c.state()
+}
+
+#[tauri::command]
+fn pair_start(c: tauri::State<Ctl>, address: Option<String>) -> Result<StateView, String> {
+    c.pair_start(address.as_deref())
+}
+
+#[tauri::command]
+fn pair_answer(c: tauri::State<Ctl>, confirmed: bool) -> StateView {
+    c.pair_answer(confirmed)
+}
+
+#[tauri::command]
+fn pair_cancel(c: tauri::State<Ctl>) -> StateView {
+    c.pair_cancel()
+}
+
+#[tauri::command]
+fn remove_device(c: tauri::State<Ctl>, key: String) -> Result<StateView, String> {
+    c.remove_device(&key)
+}
+
+#[tauri::command]
+fn add_address(c: tauri::State<Ctl>, key: String, address: String) -> Result<StateView, String> {
+    c.add_address(&key, &address)
 }
 
 fn render(app: &AppHandle, st: &State) -> tauri::Result<Menu<tauri::Wry>> {
@@ -62,19 +91,21 @@ fn render(app: &AppHandle, st: &State) -> tauri::Result<Menu<tauri::Wry>> {
     Ok(menu)
 }
 
-fn start_daemon() -> Result<(Daemon, Node), Box<dyn std::error::Error>> {
+fn start_daemon() -> Result<(Arc<Daemon>, Ctl), Box<dyn std::error::Error>> {
     let store = Arc::new(KeychainStore::new("clipsync"));
     let identity = store.load_or_create_identity()?;
-    let node = Node::new(identity.clone(), store.clone());
+    let node = Node::new(identity, store);
     let listener = Listener::bind(("0.0.0.0", DEFAULT_PORT), node.keypair().clone(), vec![])?;
     let addrs = announce_addrs(&system_interfaces());
     let id = node_id_from_public_key(&node.keypair().public);
     let discovery = Arc::new(Discovery::start(id, DEFAULT_PORT, &addrs)?);
-    let daemon = Daemon::start(
-        DaemonConfig { node, listener, resolver: Arc::new(super::load_book(Some(discovery))), auto_dial: true },
+    let book = Arc::new(super::load_book(Some(discovery.clone())));
+    let daemon = Arc::new(Daemon::start(
+        DaemonConfig { node, listener, resolver: book.clone(), auto_dial: true },
         NativeClipboard::new,
-    );
-    Ok((daemon, Node::new(identity, store)))
+    ));
+    let controller = Arc::new(Controller::new(Live::new(daemon.clone(), book, discovery)));
+    Ok((daemon, controller))
 }
 
 fn open_settings(app: &AppHandle) {
@@ -85,7 +116,7 @@ fn open_settings(app: &AppHandle) {
     }
     let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("ClipSync Settings")
-        .inner_size(480.0, 320.0)
+        .inner_size(520.0, 560.0)
         .build();
 }
 
@@ -101,14 +132,17 @@ fn set_autostart(enabled: bool) -> Result<(), String> {
 }
 
 pub fn run() {
-    let (daemon, node) = match start_daemon() {
+    let (daemon, controller) = match start_daemon() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
     };
-    let state = Arc::new(State { daemon, node, pause: Mutex::new(PauseState::default()),
+    let state = Arc::new(State {
+        daemon,
+        controller: controller.clone(),
+        pause: Mutex::new(PauseState::default()),
         notices: Mutex::new(Notices::default()),
     });
 
@@ -118,7 +152,17 @@ pub fn run() {
     }
 
     let built = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_autostart, set_autostart])
+        .manage(controller)
+        .invoke_handler(tauri::generate_handler![
+            get_autostart,
+            set_autostart,
+            get_state,
+            pair_start,
+            pair_answer,
+            pair_cancel,
+            remove_device,
+            add_address
+        ])
         .setup(move |app| {
             // Menu bar only: no Dock icon on macOS.
             #[cfg(target_os = "macos")]

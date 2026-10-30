@@ -226,6 +226,12 @@ impl Session {
         self.stream.try_clone()
     }
 
+    /// True if the socket is at EOF (peer closed) rather than holding data.
+    pub(crate) fn peek_eof(&self) -> bool {
+        let mut b = [0u8; 1];
+        matches!(self.stream.peek(&mut b), Ok(0) | Err(_))
+    }
+
     /// Wait up to `timeout` for incoming data without consuming it. Returns true if data
     /// (or EOF) is pending, so a following `recv` will not block on an idle link.
     pub(crate) fn wait_readable(&self, timeout: Duration) -> io::Result<bool> {

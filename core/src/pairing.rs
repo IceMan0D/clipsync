@@ -45,6 +45,15 @@ pub struct Node {
     inner: Arc<Inner>,
 }
 
+/// Snapshot of the pairing window for display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PairingStatus {
+    /// Time left in the open window; `None` when closed, expired or locked.
+    pub open_for: Option<Duration>,
+    pub failed: u32,
+    pub locked: bool,
+}
+
 /// Result of accepting a connection.
 pub enum Incoming {
     /// The peer's key is pinned.
@@ -91,6 +100,33 @@ impl Node {
         st.window_end = Some(Instant::now() + st.window);
         st.failed = 0;
         st.locked = false;
+    }
+
+    pub fn pairing_status(&self) -> PairingStatus {
+        let st = self.inner.state.lock().unwrap();
+        let open_for = match st.window_end {
+            Some(end) if !st.locked => {
+                Some(end.saturating_duration_since(Instant::now())).filter(|d| !d.is_zero())
+            }
+            _ => None,
+        };
+        PairingStatus { open_for, failed: st.failed, locked: st.locked }
+    }
+
+    /// Close the pairing window (cancel).
+    pub fn stop_pairing(&self) {
+        self.inner.state.lock().unwrap().window_end = None;
+    }
+
+    /// Like `dial_pairing`, with a TCP connect timeout.
+    pub fn dial_pairing_timeout(
+        &self,
+        addr: &std::net::SocketAddr,
+        timeout: Duration,
+    ) -> Result<PairingAttempt> {
+        let deadline = self.open_deadline().ok_or(Error::PairingClosed)?;
+        let session = crate::transport::connect_timeout(addr, self.inner.keypair.clone(), timeout)?;
+        Ok(PairingAttempt { node: self.clone(), session, deadline })
     }
 
     pub fn pairing_locked(&self) -> bool {
@@ -203,6 +239,21 @@ impl Node {
 }
 
 impl PairingAttempt {
+    /// The peer's static public key.
+    pub fn peer_key(&self) -> Vec<u8> {
+        self.session.remote_static().to_vec()
+    }
+
+    /// Whether the peer has already hung up (e.g. its pairing window is closed, so it
+    /// dropped our handshake). Waits briefly for an EOF to show up.
+    pub fn peer_closed(&self) -> bool {
+        match self.session.wait_readable(Duration::from_millis(250)) {
+            Ok(false) => false,
+            Ok(true) => self.session.peek_eof(),
+            Err(_) => true,
+        }
+    }
+
     /// The 6-digit code both users compare.
     pub fn sas(&self) -> String {
         format!("{:06}", sas_code(self.session.handshake_hash()))
