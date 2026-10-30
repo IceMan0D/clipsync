@@ -30,6 +30,12 @@ pub enum Error {
     Protocol(&'static str),
     #[error("replayed or out-of-order message")]
     Replay,
+    #[error("pairing is not open or is locked")]
+    PairingClosed,
+    #[error("pairing was rejected, mismatched or timed out")]
+    PairingFailed,
+    #[error("key store: {0}")]
+    Store(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -41,6 +47,15 @@ pub struct Keypair {
 }
 
 impl Keypair {
+    /// Rebuild a keypair from stored key bytes.
+    pub fn from_parts(public: Vec<u8>, private: Vec<u8>) -> Self {
+        Keypair { public, private }
+    }
+
+    pub fn private_bytes(&self) -> &[u8] {
+        &self.private
+    }
+
     pub fn generate() -> Self {
         let kp = Builder::new(NOISE_PARAMS.parse().unwrap())
             .generate_keypair()
@@ -65,6 +80,7 @@ pub struct Session {
     stream: TcpStream,
     noise: TransportState,
     remote_static: Vec<u8>,
+    handshake_hash: Vec<u8>,
     next_send_id: u64,
     last_recv_id: u64,
 }
@@ -95,6 +111,15 @@ impl Listener {
     /// Accept one connection. Handshakes whose static key is not allowlisted
     /// are dropped and reported as `Error::UnknownPeer`.
     pub fn accept(&self) -> Result<Session> {
+        let session = self.accept_unauthenticated()?;
+        if !self.allowlist.contains(&session.remote_static) {
+            return Err(Error::UnknownPeer);
+        }
+        Ok(session)
+    }
+
+    /// Complete a handshake with any peer, leaving the authorization decision to the caller.
+    pub(crate) fn accept_unauthenticated(&self) -> Result<Session> {
         let (mut stream, _) = self.listener.accept()?;
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         let mut hs = builder(&self.keypair)?.build_responder()?;
@@ -103,9 +128,6 @@ impl Listener {
         handshake_write(&mut hs, &mut stream, &mut buf)?;
         handshake_read(&mut hs, &mut stream, &mut buf)?;
         let remote = remote_static(&hs)?;
-        if !self.allowlist.contains(&remote) {
-            return Err(Error::UnknownPeer);
-        }
         finish(stream, hs, remote)
     }
 }
@@ -134,10 +156,12 @@ fn remote_static(hs: &HandshakeState) -> Result<Vec<u8>> {
 
 fn finish(stream: TcpStream, hs: HandshakeState, remote_static: Vec<u8>) -> Result<Session> {
     stream.set_read_timeout(None)?;
+    let handshake_hash = hs.get_handshake_hash().to_vec();
     Ok(Session {
         stream,
         noise: hs.into_transport_mode()?,
         remote_static,
+        handshake_hash,
         next_send_id: 1,
         last_recv_id: 0,
     })
@@ -182,6 +206,20 @@ impl Session {
     /// Static public key of the authenticated peer.
     pub fn remote_static(&self) -> &[u8] {
         &self.remote_static
+    }
+
+    /// Noise handshake hash, identical on both sides of the session.
+    pub fn handshake_hash(&self) -> &[u8] {
+        &self.handshake_hash
+    }
+
+    /// A handle to the underlying socket, used to terminate the session from elsewhere.
+    pub(crate) fn socket_handle(&self) -> io::Result<TcpStream> {
+        self.stream.try_clone()
+    }
+
+    pub(crate) fn set_read_timeout(&self, d: Option<Duration>) -> io::Result<()> {
+        self.stream.set_read_timeout(d)
     }
 
     /// Send a payload of up to `MAX_PAYLOAD` bytes, chunked as needed. Returns the message id.

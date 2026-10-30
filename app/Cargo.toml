@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 clipsync-core = { path = "../core" }
 clipsync-clipboard = { path = "../clipboard" }
+hex = "0.4.3"
