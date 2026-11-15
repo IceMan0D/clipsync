@@ -2,6 +2,24 @@
 
 ClipSync is a source-built macOS and Windows clipboard sync application. It uses a tray/menu bar app, LAN discovery and encrypted peer-to-peer connections. Linux is not an MVP target.
 
+## Install
+
+Download the latest installer from [Releases](https://github.com/IceMan0D/clipsync/releases): `.dmg` for macOS (Apple Silicon or Intel) and `-setup.exe` for Windows. Builds are unsigned.
+
+### macOS (Homebrew, no Gatekeeper warning)
+
+```sh
+brew install --cask iceman0d/tap/clipsync
+```
+
+Installing from the `.dmg` instead triggers Gatekeeper: right-click the app and choose **Open**, or run `xattr -cr /Applications/ClipSync.app`.
+
+### Windows
+
+SmartScreen shows "unknown publisher": click **More info**, then **Run anyway**.
+
+Then follow [Run and pair](#run-and-pair).
+
 ## Build from source
 
 Install Git and a current stable Rust toolchain using [rustup](https://rustup.rs/) on each machine. Clone this repository and run the commands from its root. The project embeds its UI; Node.js and the Tauri CLI are not required for these Cargo commands. The default build is an unbundled executable; signing and installers are outside the MVP.
