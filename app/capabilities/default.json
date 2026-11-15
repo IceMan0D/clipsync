@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Tray app: no window permissions needed beyond defaults",
+  "windows": ["settings"],
+  "permissions": ["core:default"]
+}
