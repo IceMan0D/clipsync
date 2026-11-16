@@ -66,10 +66,17 @@ fn add_address(c: tauri::State<Ctl>, key: String, address: String) -> Result<Sta
     c.add_address(&key, &address)
 }
 
-fn render(app: &AppHandle, st: &State) -> tauri::Result<Menu<tauri::Wry>> {
+/// Everything the menu is built from. Compared between refreshes so the native menu is only
+/// replaced when it actually changed (replacing it dismisses an open menu on macOS).
+fn menu_signature(st: &State) -> (Vec<String>, Vec<Item>) {
     let paused = st.pause.lock().unwrap().is_paused();
-    let menu = Menu::new(app)?;
     let notices = st.notices.lock().unwrap().messages();
+    (notices, build_menu(&st.devices(), paused))
+}
+
+fn render(app: &AppHandle, st: &State) -> tauri::Result<Menu<tauri::Wry>> {
+    let (notices, items) = menu_signature(st);
+    let menu = Menu::new(app)?;
     if !notices.is_empty() {
         for m in notices.iter().rev() {
             menu.append(&MenuItem::new(app, format!("\u{26A0} {m}"), false, None::<&str>)?)?;
@@ -77,7 +84,7 @@ fn render(app: &AppHandle, st: &State) -> tauri::Result<Menu<tauri::Wry>> {
         menu.append(&MenuItem::with_id(app, ID_DISMISS_NOTICES, "Dismiss notices", true, None::<&str>)?)?;
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
-    for item in build_menu(&st.devices(), paused) {
+    for item in items {
         match item {
             Item::Label(t) => menu.append(&MenuItem::new(app, t, false, None::<&str>)?)?,
             Item::Separator => menu.append(&PredefinedMenuItem::separator(app)?)?,
@@ -109,16 +116,33 @@ fn start_daemon() -> Result<(Arc<Daemon>, Ctl, Arc<Discovery>), Box<dyn std::err
     Ok((daemon, controller, discovery))
 }
 
+/// Bring a window in front of other apps. A tray-only app is not frontmost, so the OS would
+/// otherwise open/raise the window behind the current app.
+fn bring_to_front(w: &tauri::WebviewWindow) {
+    let _ = w.unminimize();
+    let _ = w.show();
+    let _ = w.set_focus();
+    // Windows may refuse SetForegroundWindow; a brief always-on-top toggle forces it forward.
+    let _ = w.set_always_on_top(true);
+    let _ = w.set_always_on_top(false);
+    let _ = w.set_focus();
+}
+
 fn open_settings(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("settings") {
-        let _ = w.show();
-        let _ = w.set_focus();
-        return;
+    let existing = app.get_webview_window("settings");
+    let window = match existing {
+        Some(w) => Some(w),
+        None => WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
+            .title("ClipSync Settings")
+            .inner_size(520.0, 560.0)
+            .focused(true)
+            .build()
+            .map_err(|e| eprintln!("settings window: {e}"))
+            .ok(),
+    };
+    if let Some(w) = window {
+        bring_to_front(&w);
     }
-    let _ = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
-        .title("ClipSync Settings")
-        .inner_size(520.0, 560.0)
-        .build();
 }
 
 #[tauri::command]
@@ -198,6 +222,7 @@ pub fn run() {
 
             // Refresh device statuses and the pause check mark.
             let st = state.clone();
+            let mut last = menu_signature(&state);
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(2));
                 {
@@ -206,10 +231,15 @@ pub fn run() {
                         n.push_event(&ev);
                     }
                 }
+                let sig = menu_signature(&st);
+                let changed = sig != last;
+                last = sig;
                 let (h, st2, tray) = (handle.clone(), st.clone(), tray.clone());
                 let _ = handle.run_on_main_thread(move || {
-                    if let Ok(m) = render(&h, &st2) {
-                        let _ = tray.set_menu(Some(m));
+                    if changed {
+                        if let Ok(m) = render(&h, &st2) {
+                            let _ = tray.set_menu(Some(m));
+                        }
                     }
                     let paused = st2.pause.lock().unwrap().is_paused();
                     let _ = tray.set_tooltip(Some(tooltip(&st2.devices(), paused)));
