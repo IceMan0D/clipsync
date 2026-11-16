@@ -127,6 +127,33 @@ fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
     f()
 }
 
+/// Wait until both sides are connected, then until the connection has stopped churning.
+/// When both sides dial at once, the loser of the simultaneous-dial tie-break is torn down
+/// shortly after the first `Connected`; on slow runners (Windows CI) that can land in the
+/// middle of a test and look like a lost sync or a spurious reconnect.
+fn connect_and_settle(a: &Side, b: &Side) {
+    assert!(wait_until(Duration::from_secs(10), || {
+        a.d().peer_state(&b.public) == ConnState::Connected
+            && b.d().peer_state(&a.public) == ConnState::Connected
+    }));
+    let total = || a.d().connections_established() + b.d().connections_established();
+    let mut last = total();
+    let mut stable_since = Instant::now();
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end && stable_since.elapsed() < Duration::from_millis(1500) {
+        thread::sleep(Duration::from_millis(50));
+        let now = total();
+        if now != last {
+            last = now;
+            stable_since = Instant::now();
+        }
+    }
+    assert!(wait_until(Duration::from_secs(5), || {
+        a.d().peer_state(&b.public) == ConnState::Connected
+            && b.d().peer_state(&a.public) == ConnState::Connected
+    }));
+}
+
 fn two_sides() -> (Side, Side) {
     let (ka, kb) = (Keypair::generate(), Keypair::generate());
     let a = side(&[&kb], ka.clone());
@@ -141,10 +168,7 @@ fn paired_daemons_find_each_other_and_sync_text_both_ways_within_a_second() {
     let (mut a, mut b) = two_sides();
     a.start(true);
     b.start(true);
-    assert!(wait_until(Duration::from_secs(5), || {
-        a.d().peer_state(&b.public) == ConnState::Connected
-            && b.d().peer_state(&a.public) == ConnState::Connected
-    }));
+    connect_and_settle(&a, &b);
 
     let t = Instant::now();
     a.copy("from a");
@@ -212,9 +236,16 @@ fn unpaired_peer_never_connects() {
     b.resolver.set(a.id, vec![a.addr]);
     a.start(false);
     b.start(true);
-    thread::sleep(Duration::from_millis(800));
-    assert_eq!(a.d().connection_count(), 0);
-    assert_eq!(b.d().connection_count(), 0);
+    // Count only handshaken sessions: a connection attempt may sit in the registry for a
+    // moment before the untrusting side rejects it.
+    let end = Instant::now() + Duration::from_millis(800);
+    while Instant::now() < end {
+        assert_ne!(a.d().peer_state(&b.public), ConnState::Connected);
+        assert_ne!(b.d().peer_state(&a.public), ConnState::Connected);
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(a.d().connections_established(), 0);
+    assert_eq!(b.d().connections_established(), 0);
 }
 
 fn a_pub(a: &Side) -> Keypair {
@@ -226,10 +257,7 @@ fn pausing_stops_sending_and_applying_and_resuming_restores_sync() {
     let (mut a, mut b) = two_sides();
     a.start(true);
     b.start(true);
-    assert!(wait_until(Duration::from_secs(5), || {
-        a.d().peer_state(&b.public) == ConnState::Connected
-            && b.d().peer_state(&a.public) == ConnState::Connected
-    }));
+    connect_and_settle(&a, &b);
 
     // b paused: a's copy is not applied on b
     b.d().set_paused(true);
@@ -261,10 +289,7 @@ fn idle_connection_stays_up_past_the_dead_peer_timeout_thanks_to_heartbeats() {
     let (mut a, mut b) = two_sides();
     a.start(true);
     b.start(true);
-    assert!(wait_until(Duration::from_secs(5), || {
-        a.d().peer_state(&b.public) == ConnState::Connected
-            && b.d().peer_state(&a.public) == ConnState::Connected
-    }));
+    connect_and_settle(&a, &b);
     let before = a.d().connections_established() + b.d().connections_established();
     thread::sleep(Duration::from_secs(7));
     assert_eq!(a.d().peer_state(&b.public), ConnState::Connected);
@@ -309,10 +334,7 @@ fn network_change_forces_immediate_reconnect_and_drops_items_copied_while_down()
     let (mut a, mut b) = two_sides();
     a.start(true);
     b.start(false);
-    assert!(wait_until(Duration::from_secs(5), || {
-        a.d().peer_state(&b.public) == ConnState::Connected
-            && b.d().peer_state(&a.public) == ConnState::Connected
-    }));
+    connect_and_settle(&a, &b);
 
     // The network goes away: a cannot find b, and tears down on the change notification.
     a.resolver.set(b.id, vec![]);
@@ -347,10 +369,7 @@ fn removing_a_peer_disconnects_it_and_it_is_not_redialed() {
     let (mut a, mut b) = two_sides();
     a.start(true);
     b.start(true);
-    assert!(wait_until(Duration::from_secs(5), || {
-        a.d().peer_state(&b.public) == ConnState::Connected
-            && b.d().peer_state(&a.public) == ConnState::Connected
-    }));
+    connect_and_settle(&a, &b);
 
     a.d().remove_peer(&b.public).unwrap();
     assert!(a.d().node().paired_devices().unwrap().is_empty());
@@ -391,8 +410,5 @@ fn a_device_paired_while_running_is_dialed_without_restart() {
 
     a.d().add_peer(&b.public);
     b.d().add_peer(&a.public);
-    assert!(wait_until(Duration::from_secs(5), || {
-        a.d().peer_state(&b.public) == ConnState::Connected
-            && b.d().peer_state(&a.public) == ConnState::Connected
-    }));
+    connect_and_settle(&a, &b);
 }
