@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "clipsync-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clipsync-clipboard",
  "clipsync-core",
@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "clipsync-clipboard"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "objc2",
  "objc2-app-kit",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "clipsync-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "block2",
  "clipsync-clipboard",
