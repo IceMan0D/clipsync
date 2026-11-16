@@ -3,7 +3,7 @@
 cask "clipsync" do
   arch arm: "aarch64", intel: "x64"
 
-  version "0.1.0"
+  version "0.1.1"
   sha256 arm:   "REPLACE_WITH_SHA256_OF_ARM_DMG",
          intel: "REPLACE_WITH_SHA256_OF_X64_DMG"
 
