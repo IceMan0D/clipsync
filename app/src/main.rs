@@ -1,4 +1,7 @@
 // Entry point: tray app by default, plus a CLI for SAS pairing and device management.
+// GUI subsystem on Windows so launching the tray app doesn't open a console window;
+// CLI subcommands re-attach to the parent console (see `attach_parent_console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 mod live;
 mod tray;
 
@@ -145,7 +148,54 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// A GUI-subsystem exe has no console; when run from a terminal with a subcommand,
+/// attach to the parent's console and point the std handles at it so output shows up.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use std::os::windows::io::AsRawHandle;
+    extern "system" {
+        fn AttachConsole(pid: u32) -> i32;
+        fn SetStdHandle(which: u32, handle: *mut std::ffi::c_void) -> i32;
+        fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return;
+        }
+        let open = |name: &str, write: bool| {
+            std::fs::OpenOptions::new().read(!write).write(write).open(name).ok()
+        };
+        // Only replace handles that weren't inherited, so pipes/redirects keep working.
+        let missing = |which| {
+            let h = GetStdHandle(which);
+            h.is_null() || h as isize == -1
+        };
+        if missing(STD_INPUT_HANDLE) {
+            if let Some(f) = open("CONIN$", false) {
+                SetStdHandle(STD_INPUT_HANDLE, f.as_raw_handle() as _);
+                std::mem::forget(f);
+            }
+        }
+        for which in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            if missing(which) {
+                if let Some(f) = open("CONOUT$", true) {
+                    SetStdHandle(which, f.as_raw_handle() as _);
+                    std::mem::forget(f);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    if std::env::args().nth(1).is_some_and(|a| a != "app") {
+        attach_parent_console();
+    }
     if let Err(e) = run() {
         eprintln!("error: {e}");
         std::process::exit(1);
