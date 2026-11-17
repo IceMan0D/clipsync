@@ -421,6 +421,7 @@ fn sync_loop<C: ClipboardBackend>(s: &Shared, mut node: SyncNode<C>, rx: Receive
                 }
             }
             let ok = a.last_heard.elapsed() < DEAD_AFTER
+                && s.registry.is_current(&a.peer, a.token)
                 && node.pump_local(&mut a.session).is_ok()
                 && match a.session.wait_readable(POLL) {
                     Ok(false) => true,

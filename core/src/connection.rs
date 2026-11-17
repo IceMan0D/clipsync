@@ -169,6 +169,14 @@ impl Registry {
         }
     }
 
+    /// Whether `token` is still the registered connection for `peer`. A session whose
+    /// slot was cleared or replaced must be dropped by its owner: the stored socket
+    /// handle cannot be trusted to close it (on Windows a cloned handle can report
+    /// `NotConnected` on shutdown, leaving the real socket open).
+    pub fn is_current(&self, peer: &NodeId, token: u64) -> bool {
+        self.inner.lock().unwrap().slots.get(peer).is_some_and(|s| s.token == token)
+    }
+
     pub fn count(&self) -> usize {
         self.inner.lock().unwrap().slots.len()
     }
