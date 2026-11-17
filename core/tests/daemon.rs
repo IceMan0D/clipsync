@@ -343,7 +343,8 @@ fn network_change_forces_immediate_reconnect_and_drops_items_copied_while_down()
     assert!(wait_until(Duration::from_secs(10), || {
         a.d().peer_state(&b.public) == ConnState::Disconnected
             && b.d().peer_state(&a.public) == ConnState::Disconnected
-    }));
+    }), "after network change: a sees b as {:?}, b sees a as {:?}",
+        a.d().peer_state(&b.public), b.d().peer_state(&a.public));
     // let a's backoff grow so only the notification can make the next dial prompt
     thread::sleep(Duration::from_millis(3500));
     a.copy("while offline");
