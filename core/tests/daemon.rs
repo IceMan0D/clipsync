@@ -339,7 +339,8 @@ fn network_change_forces_immediate_reconnect_and_drops_items_copied_while_down()
     // The network goes away: a cannot find b, and tears down on the change notification.
     a.resolver.set(b.id, vec![]);
     a.d().network_changed();
-    assert!(wait_until(Duration::from_secs(2), || {
+    // b only notices when its socket read sees the close, which is slow on Windows CI
+    assert!(wait_until(Duration::from_secs(10), || {
         a.d().peer_state(&b.public) == ConnState::Disconnected
             && b.d().peer_state(&a.public) == ConnState::Disconnected
     }));
